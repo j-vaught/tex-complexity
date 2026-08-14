@@ -125,6 +125,18 @@ def test_inline_inputs_stop_before_expansion_exceeds_limit(
         cli.inline_inputs(r"\input{leaf}\input{leaf}", tmp_path)
 
 
+def test_inline_inputs_limit_empty_expansion_operations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "a.tex").write_text(r"\input{b}\input{b}", encoding="utf-8")
+    (tmp_path / "b.tex").write_text(r"\input{c}\input{c}", encoding="utf-8")
+    (tmp_path / "c.tex").write_text("", encoding="utf-8")
+    monkeypatch.setattr(cli, "MAX_INCLUDE_OPERATIONS", 5)
+
+    with pytest.raises(cli.IncludeError, match="5 include operations"):
+        cli.inline_inputs(r"\input{a}", tmp_path)
+
+
 def test_load_aux_follows_child_files_without_leaving_root(tmp_path: Path) -> None:
     (tmp_path / "main.aux").write_text(
         r"\bibcite{main}{2}\newlabel{sec:main}{{I}{1}}\@input{chapter.aux}",
@@ -220,6 +232,25 @@ def test_analyze_file_preserves_standard_hyperlink_labels(tmp_path: Path, nlp: L
 
     assert "the project page" in text
     assert "https://example.com" not in text
+    assert len(stats) == 2
+
+
+def test_analyze_file_accepts_multiline_hyperlink_arguments(tmp_path: Path, nlp: Language) -> None:
+    tex = tmp_path / "multiline-hyperlink.tex"
+    tex.write_text(
+        r"""
+        \begin{document}
+        Visit \href{https://example.com}
+        {the project page} for complete documentation.
+        Another full sentence remains available for analysis.
+        \end{document}
+        """,
+        encoding="utf-8",
+    )
+
+    text, stats, _ = cli.analyze_file(tex, nlp)
+
+    assert "the project page" in text
     assert len(stats) == 2
 
 

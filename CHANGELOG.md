@@ -10,7 +10,7 @@ No changes have been recorded since version 0.1.1.
 
 Highlight generation now checks resolved paths and filesystem identities before analysis begins, then installs completed PDFs with an atomic replacement. This prevents `--force`, symlinks, or hard links from mutating a requested input or an unrelated linked file.
 
-TeX preprocessing now bounds include expansion while it is constructed, preserves standard hyperlink labels, and reports conversion problems without aborting valid batch siblings. Batch processing also continues after inaccessible inputs or a closed output pipe while preserving the correct failure status.
+TeX preprocessing now bounds include expansion by both size and operation count while it is constructed, preserves standard and multiline hyperlink labels, and reports conversion problems without aborting valid batch siblings. Batch processing also continues after inaccessible inputs or a closed output pipe while preserving the correct failure status.
 
 ## 0.1.0 — 2026-08-14
 

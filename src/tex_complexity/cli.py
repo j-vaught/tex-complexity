@@ -206,6 +206,7 @@ DISTANT_SENTS = 5  # referent last mentioned further back than this = reader mus
 
 RARE_ZIPF_THRESHOLD = 3.5  # zipf < 3.5 ~ rarer than ~1 per 316,000 words
 MAX_INCLUDE_DEPTH = 20
+MAX_INCLUDE_OPERATIONS = 1_000
 MAX_DOCUMENT_CHARS = 2_000_000
 NON_PROSE_ENVIRONMENTS = (
     "verbatim",
@@ -234,7 +235,7 @@ INLINE_VERBATIM_RE = re.compile(
     r"(?:(?!(?P=delimiter))[^\r\n])*(?P=delimiter)"
 )
 INCLUDE_RE = re.compile(r"\\(input|include)\{([^}]+)\}")
-HREF_RE = re.compile(r"\\href\s*\{[^{}\r\n]*\}\{((?:[^{}]|\{[^{}]*\})*)\}")
+HREF_RE = re.compile(r"\\href\s*\{[^{}]*\}\s*\{((?:[^{}]|\{[^{}]*\})*)\}")
 _ANAPHORIC_PATTERNS = [
     (phrase, re.compile(rf"(?<!\w){re.escape(phrase)}(?!\w)", re.IGNORECASE))
     for phrase in ANAPHORIC_PHRASES
@@ -344,6 +345,7 @@ def inline_inputs(
         active_paths,
         allow_outside,
         MAX_DOCUMENT_CHARS,
+        [MAX_INCLUDE_OPERATIONS],
     )
 
 
@@ -354,6 +356,7 @@ def _inline_inputs(
     active_paths: set[Path],
     allow_outside: bool,
     char_limit: int,
+    include_budget: list[int],
 ) -> str:
     """Expand includes without constructing text beyond the document limit."""
     source = remove_inline_verbatim(source)
@@ -361,6 +364,11 @@ def _inline_inputs(
         raise IncludeError(f"include nesting exceeds {MAX_INCLUDE_DEPTH} levels")
 
     def expand_match(m: re.Match[str], remaining_chars: int) -> str:
+        if include_budget[0] <= 0:
+            raise IncludeError(
+                f"include expansion exceeds {MAX_INCLUDE_OPERATIONS:,} include operations"
+            )
+        include_budget[0] -= 1
         rel = m.group(2)
         path = base_dir / rel
         if path.suffix == "":
@@ -390,6 +398,7 @@ def _inline_inputs(
                 active_paths,
                 allow_outside,
                 remaining_chars,
+                include_budget,
             )
         except OSError as exc:
             raise IncludeError(f"could not read included file: {rel}") from exc

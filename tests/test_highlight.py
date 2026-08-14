@@ -29,6 +29,7 @@ def sample_stats(
         n_rare_words=1,
         n_complex_words=3,
         max_subj_verb_dist=2,
+        has_subject_verb_pair=True,
         n_subordinate_clauses=0,
         tree_depth=3,
         referential_score=0,
@@ -52,9 +53,9 @@ def test_palette_is_quantized_and_high_contrast(value: float, color: str, ink: s
 
 
 def test_typst_escaping_covers_line_markup() -> None:
-    escaped = _esc("= heading / term - item + item")
+    escaped = _esc("= heading / term - item + item ~ value")
 
-    assert escaped == r"\= heading \/ term \- item \+ item"
+    assert escaped == r"\= heading \/ term \- item \+ item \~ value"
 
 
 def test_word_palette_has_three_distinct_levels() -> None:

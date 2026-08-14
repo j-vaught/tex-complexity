@@ -15,22 +15,28 @@ from tex_complexity.readability import (
 
 def make_stats(
     *,
+    text: str = "A representative sentence contains several technical expressions.",
     n_words: int = 7,
     n_syllables: int = 15,
     n_polysyllables: int = 3,
     n_rare_words: int = 2,
     n_complex_words: int = 4,
+    max_subj_verb_dist: int = 2,
+    has_subject_verb_pair: bool = True,
+    n_subordinate_clauses: int = 1,
+    tree_depth: int = 4,
 ) -> SentenceStats:
     return SentenceStats(
-        text="A representative sentence contains several technical expressions.",
+        text=text,
         n_words=n_words,
         n_syllables=n_syllables,
         n_polysyllables=n_polysyllables,
         n_rare_words=n_rare_words,
         n_complex_words=n_complex_words,
-        max_subj_verb_dist=2,
-        n_subordinate_clauses=1,
-        tree_depth=4,
+        max_subj_verb_dist=max_subj_verb_dist,
+        has_subject_verb_pair=has_subject_verb_pair,
+        n_subordinate_clauses=n_subordinate_clauses,
+        tree_depth=tree_depth,
         referential_score=0,
     )
 
@@ -92,6 +98,58 @@ def test_word_scores_cover_both_polysyllabic_and_rare_words(nlp: Language) -> No
     assert scores["Information"] > 0
     assert scores["communication"] > 0
     assert scores["quarks"] > 0
+
+
+def test_short_rare_terms_are_not_excluded(nlp: Language) -> None:
+    stats = analyze_sentence(next(nlp("FFT transforms useful data.").sents))
+
+    assert stats.n_rare_words >= 1
+    assert dict(stats.word_scores)["FFT "] > 0
+
+
+def test_referential_spelling_requires_pronoun_or_demonstrative_pos(nlp: Language) -> None:
+    complementizer = analyze_sentence(next(nlp("That birds fly is clear.").sents))
+    initialism = analyze_sentence(next(nlp("The IT system remains reliable.").sents))
+
+    assert not any(hit.startswith("bare") for hit in complementizer.referential_hits)
+    assert not any("pronoun" in hit for hit in initialism.referential_hits)
+
+
+def test_report_wires_fog_to_polysyllables_not_rare_union() -> None:
+    stats = make_stats(
+        n_words=10,
+        n_syllables=10,
+        n_polysyllables=0,
+        n_rare_words=5,
+        n_complex_words=5,
+    )
+
+    output = report([stats], top=1, show_all=False)
+
+    fog_line = next(line for line in output.splitlines() if "Gunning fog index" in line)
+    assert "4.0" in fog_line
+
+
+def test_report_includes_zero_subject_verb_gaps_in_mean() -> None:
+    adjacent = make_stats(text="Birds fly over lakes.", max_subj_verb_dist=0)
+    separated = make_stats(text="Birds after several long pauses fly away.", max_subj_verb_dist=4)
+
+    output = report([adjacent, separated], top=2, show_all=False)
+
+    mean_line = next(line for line in output.splitlines() if "Mean separation" in line)
+    assert "2.0" in mean_line
+
+
+def test_report_ranks_nesting_with_shared_metric() -> None:
+    clauses = make_stats(text="Two clauses rank lower here.", n_subordinate_clauses=2, tree_depth=4)
+    depth = make_stats(
+        text="Deep structure ranks higher here.", n_subordinate_clauses=1, tree_depth=10
+    )
+
+    output = report([clauses, depth], top=1, show_all=False)
+    nested_lines = output.split("Most nested 1:", maxsplit=1)[1]
+
+    assert "Deep structure" in nested_lines.splitlines()[1]
 
 
 def test_report_contains_all_metric_families_and_ranked_words() -> None:

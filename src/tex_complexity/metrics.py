@@ -15,6 +15,7 @@ class SentenceStats:
     n_rare_words: int
     n_complex_words: int
     max_subj_verb_dist: int
+    has_subject_verb_pair: bool
     n_subordinate_clauses: int
     tree_depth: int
     referential_score: int
@@ -37,7 +38,7 @@ def _nesting(s: SentenceStats) -> float:
 METRICS: dict[str, tuple[str, str, Callable[[SentenceStats], float], float, float, str]] = {
     "sentence": (
         "Sentence length",
-        "Words per sentence. Green at 10 words, red at 40.",
+        "Words per sentence. White at 10 words, garnet at 40.",
         lambda s: float(s.n_words),
         10,
         40,
@@ -61,7 +62,7 @@ METRICS: dict[str, tuple[str, str, Callable[[SentenceStats], float], float, floa
     ),
     "nesting": (
         "Nesting",
-        "Subordinate clauses plus parse-tree depth beyond 4 levels.",
+        "Subordinate clauses plus half a point per parse-tree level beyond 4.",
         _nesting,
         0,
         5,

@@ -153,6 +153,21 @@ def test_analyze_file_keeps_unpunctuated_sections_separate(tmp_path: Path, nlp: 
     assert all("separate prose" not in stat.text for stat in stats if stat.seg == 0)
 
 
+def test_plain_text_percentages_are_not_treated_as_tex_comments(
+    tmp_path: Path, nlp: Language
+) -> None:
+    source = tmp_path / "results.txt"
+    source.write_text(
+        "Accuracy reached 95% in the first experiment. Recall remained stable afterward.",
+        encoding="utf-8",
+    )
+
+    text, stats, _ = cli.analyze_file(source, nlp)
+
+    assert "95% in the first experiment" in text
+    assert len([stat for stat in stats if stat.n_words >= 3]) == 2
+
+
 def test_analyze_file_rejects_short_and_oversized_input(
     tmp_path: Path, nlp: Language, monkeypatch: pytest.MonkeyPatch
 ) -> None:

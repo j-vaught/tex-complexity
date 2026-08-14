@@ -2,7 +2,7 @@
 
 Each sentence of the document prose is typeset with a background color on a
 white-to-garnet scale according to its score on one metric, with the raw value
-shown as a small superscript. One PDF per requested metric.
+shown in small inline text. One PDF per requested metric.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ _SCALE = (
 _BLACK = "#000000"
 _WHITE = "#ffffff"
 
-_TYPST_ESCAPES = str.maketrans({c: f"\\{c}" for c in "\\#$*_`[]<>@-+=/"})
+_TYPST_ESCAPES = str.maketrans({c: f"\\{c}" for c in "\\#$*_`[]<>@-+=/~"})
 
 
 class RenderError(RuntimeError):

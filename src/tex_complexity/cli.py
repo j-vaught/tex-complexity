@@ -597,9 +597,7 @@ def analyze_sentence(
 
     syllable_counts = [syllable_count(t.text) for t in words]
     rare_flags = [
-        not t.is_stop
-        and len(t.text) > 3
-        and zipf_frequency(t.lemma_.lower(), "en") < RARE_ZIPF_THRESHOLD
+        not t.is_stop and zipf_frequency(t.lemma_.lower(), "en") < RARE_ZIPF_THRESHOLD
         for t in words
     ]
     poly_flags = [count >= 3 for count in syllable_counts]
@@ -625,8 +623,10 @@ def analyze_sentence(
         word_scores.append((t.text_with_ws, w))
 
     max_sv = 0
+    has_subject_verb_pair = False
     for tok in sent:
         if tok.dep_ in SUBJECT_DEPS and tok.head.pos_ in ("VERB", "AUX"):
+            has_subject_verb_pair = True
             start, end = sorted((tok.i, tok.head.i))
             gap = sum(1 for item in sent if start < item.i < end and item.is_alpha)
             max_sv = max(max_sv, gap)
@@ -648,7 +648,7 @@ def analyze_sentence(
     # referent; "This method shows..." does not).
     first = next((t for t in sent if t.is_alpha), None)
     bare_first = False
-    if first is not None and first.lower_ in BARE_DEMONSTRATIVES:
+    if first is not None and first.lower_ in BARE_DEMONSTRATIVES and first.pos_ in ("DET", "PRON"):
         anchors_noun = first.dep_ == "det" and first.head.pos_ in ("NOUN", "PROPN")
         if not anchors_noun:
             hits.append(f"bare '{first.text}'")
@@ -661,6 +661,7 @@ def analyze_sentence(
             1
             for t in sent
             if t.lower_ in THIRD_PERSON_PRONOUNS
+            and t.pos_ == "PRON"
             and not (bare_first and first is not None and t.i == first.i)
         )
     score = len(hits) + pron
@@ -680,6 +681,7 @@ def analyze_sentence(
         n_rare_words=n_rare,
         n_complex_words=n_complex,
         max_subj_verb_dist=max_sv,
+        has_subject_verb_pair=has_subject_verb_pair,
         n_subordinate_clauses=n_sub,
         tree_depth=tree_depth,
         referential_score=score,
@@ -705,6 +707,7 @@ def report(stats: list[SentenceStats], top: int, show_all: bool) -> str:
     total_words = sum(lengths)
     total_syllables = sum(s.n_syllables for s in sents)
     total_complex = sum(s.n_complex_words for s in sents)
+    total_polysyllables = sum(s.n_polysyllables for s in sents)
 
     out.append("=" * 78)
     out.append("SENTENCE COMPLEXITY")
@@ -746,7 +749,10 @@ def report(stats: list[SentenceStats], top: int, show_all: bool) -> str:
         )
     )
     out.append(
-        fmt_row("Gunning fog index", f"{gunning_fog(total_words, len(sents), total_complex):.1f}")
+        fmt_row(
+            "Gunning fog index",
+            f"{gunning_fog(total_words, len(sents), total_polysyllables):.1f}",
+        )
     )
     out.append("")
     out.append(f"  Longest {top}:")
@@ -757,7 +763,7 @@ def report(stats: list[SentenceStats], top: int, show_all: bool) -> str:
     out.append("=" * 78)
     out.append("WORD COMPLEXITY")
     out.append("=" * 78)
-    poly = sum(s.n_polysyllables for s in sents)
+    poly = total_polysyllables
     rare = sum(s.n_rare_words for s in sents)
     out.append(fmt_row("Words analyzed", str(total_words)))
     out.append(
@@ -788,7 +794,8 @@ def report(stats: list[SentenceStats], top: int, show_all: bool) -> str:
     out.append("=" * 78)
     out.append("SUBJECT-VERB SEPARATION")
     out.append("=" * 78)
-    sv = [s.max_subj_verb_dist for s in sents if s.max_subj_verb_dist > 0]
+    sv_sents = [s for s in sents if s.has_subject_verb_pair]
+    sv = [s.max_subj_verb_dist for s in sv_sents]
     if sv:
         out.append(
             fmt_row(
@@ -806,7 +813,7 @@ def report(stats: list[SentenceStats], top: int, show_all: bool) -> str:
         )
         out.append("")
         out.append(f"  Widest {top}:")
-        for s in sorted(sents, key=lambda s: -s.max_subj_verb_dist)[:top]:
+        for s in sorted(sv_sents, key=lambda s: -s.max_subj_verb_dist)[:top]:
             out.append(f"    [{s.max_subj_verb_dist} w gap] {clip(s.text)}")
 
     out.append("")
@@ -834,7 +841,11 @@ def report(stats: list[SentenceStats], top: int, show_all: bool) -> str:
     )
     out.append("")
     out.append(f"  Most nested {top}:")
-    for s in sorted(sents, key=lambda s: (-s.n_subordinate_clauses, -s.tree_depth))[:top]:
+    nesting_score = METRICS["nesting"][2]
+    for s in sorted(
+        sents,
+        key=lambda s: (-nesting_score(s), -s.n_subordinate_clauses, -s.tree_depth),
+    )[:top]:
         out.append(f"    [{s.n_subordinate_clauses} cl, depth {s.tree_depth}] {clip(s.text)}")
 
     out.append("")
@@ -886,10 +897,10 @@ def analyze_file(
     path: Path, nlp: Any, allow_outside_includes: bool = False
 ) -> tuple[str, list[SentenceStats], list[tuple[int, str]]]:
     source = path.read_text(encoding="utf-8", errors="replace")
-    source = remove_non_prose_environments(strip_comments(source))
     seg_titles: list[tuple[int, str]] = [(0, "")]
     pieces: list[str]
     if path.suffix.lower() == ".tex":
+        source = remove_non_prose_environments(strip_comments(source))
         source = inline_inputs(
             source,
             path.parent,
@@ -949,7 +960,7 @@ def _positive_int(value: str) -> int:
     return parsed
 
 
-def main() -> None:
+def _run() -> None:
     ap = argparse.ArgumentParser(
         prog="texstats",
         description="Writing-complexity statistics for LaTeX documents",
@@ -982,7 +993,10 @@ def main() -> None:
     args = ap.parse_args()
 
     if args.highlight and shutil.which("typst") is None:
-        ap.error("--highlight requires the 'typst' executable on PATH")
+        print(
+            "texstats: error: --highlight requires the 'typst' executable on PATH", file=sys.stderr
+        )
+        raise SystemExit(1)
 
     failed = False
     paths: list[Path] = []
@@ -1000,7 +1014,11 @@ def main() -> None:
     try:
         nlp = spacy.load("en_core_web_sm")
     except OSError as exc:
-        ap.error(f"could not load the en_core_web_sm language model: {exc}")
+        print(
+            f"texstats: error: could not load the en_core_web_sm language model: {exc}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from exc
 
     for path in paths:
         try:
@@ -1048,6 +1066,16 @@ def main() -> None:
                 print(f"  wrote {out_pdf}")
     if failed:
         raise SystemExit(1)
+
+
+def main() -> None:
+    try:
+        _run()
+    except BrokenPipeError:
+        try:
+            sys.stdout.close()
+        finally:
+            raise SystemExit(0) from None
 
 
 if __name__ == "__main__":

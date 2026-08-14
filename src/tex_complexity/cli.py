@@ -70,12 +70,16 @@ THIRD_PERSON_PRONOUNS = {
     "she",
     "her",
     "hers",
+    "herself",
+    "himself",
     "it",
     "its",
+    "itself",
     "they",
     "them",
     "their",
     "theirs",
+    "themselves",
 }
 
 # Abstract "shell" nouns: they name a category, not a thing. A definite NP
@@ -170,7 +174,6 @@ SHELL_NOUNS = {
     "item",
     "part",
     "portion",
-    "aspect",
     "way",
     "manner",
     "fashion",
@@ -474,7 +477,7 @@ def split_sections(body: str) -> list[tuple[int, str, str]]:
         (0, "", body[: matches[0].start() if matches else None])
     ]
     n_sec = n_sub = n_subsub = 0
-    for m, nxt in zip(matches, matches[1:] + [None]):
+    for m, nxt in zip(matches, [*matches[1:], None], strict=True):
         kind, title = m.group(1), m.group(2)
         end = nxt.start() if nxt else len(body)
         if kind == "section":
@@ -603,15 +606,22 @@ def analyze_sentence(
     n_syllables = sum(syllable_counts)
     n_poly = sum(poly_flags)
     n_rare = sum(rare_flags)
-    n_complex = sum(poly or rare for poly, rare in zip(poly_flags, rare_flags))
+    n_complex = sum(poly or rare for poly, rare in zip(poly_flags, rare_flags, strict=True))
 
+    word_features = {
+        token.i: (syllables, rare)
+        for token, syllables, rare in zip(words, syllable_counts, rare_flags, strict=True)
+    }
     word_scores: list[tuple[str, float]] = []
     for t in sent:
         w = 0.0
-        if t.is_alpha and not t.is_stop and len(t.text) > 2:
+        if t.i in word_features:
+            syllables, rare = word_features[t.i]
             zipf = zipf_frequency(t.lemma_.lower(), "en")
-            # zipf 4 (common) -> 0; zipf 1.5 or unknown-to-the-corpus -> 1.
-            w = min(1.0, max(0.0, (4.0 - zipf) / 2.5))
+            syllable_score = min(1.0, max(0.0, (syllables - 2) / 3))
+            rarity_score = max(0.3, min(1.0, 0.3 + (RARE_ZIPF_THRESHOLD - zipf) / 2.5))
+            if syllables >= 3 or rare:
+                w = max(syllable_score, rarity_score if rare else 0.0)
         word_scores.append((t.text_with_ws, w))
 
     max_sv = 0
@@ -637,19 +647,21 @@ def analyze_sentence(
     # followed by a noun ("This shows..." forces the reader to resolve the
     # referent; "This method shows..." does not).
     first = next((t for t in sent if t.is_alpha), None)
+    bare_first = False
     if first is not None and first.lower_ in BARE_DEMONSTRATIVES:
         anchors_noun = first.dep_ == "det" and first.head.pos_ in ("NOUN", "PROPN")
         if not anchors_noun:
             hits.append(f"bare '{first.text}'")
-    # Mid-sentence pronoun density adds one point per third-person pronoun.
-    # Skipped when coreference resolution runs: it charges pronouns by actual
-    # antecedent distance instead of a blanket count.
+            bare_first = True
+    # Pronoun density adds one point per third-person pronoun. A sentence-opening
+    # bare "it" is already represented by the demonstrative signal above.
     pron = 0
     if count_pronouns:
         pron = sum(
             1
             for t in sent
-            if t.lower_ in THIRD_PERSON_PRONOUNS and t.i != (first.i if first else -1)
+            if t.lower_ in THIRD_PERSON_PRONOUNS
+            and not (bare_first and first is not None and t.i == first.i)
         )
     score = len(hits) + pron
     if pron:
@@ -713,10 +725,11 @@ def report(stats: list[SentenceStats], top: int, show_all: bool) -> str:
             "low = monotone rhythm",
         )
     )
+    long_sentence_count = sum(1 for length in lengths if length > 30)
     out.append(
         fmt_row(
             "Sentences > 30 words",
-            f"{sum(1 for n in lengths if n > 30)} ({100 * sum(1 for n in lengths if n > 30) / len(sents):.0f}%)",
+            f"{long_sentence_count} ({100 * long_sentence_count / len(sents):.0f}%)",
         )
     )
     out.append(
@@ -875,7 +888,7 @@ def analyze_file(
     source = path.read_text(encoding="utf-8", errors="replace")
     source = remove_non_prose_environments(strip_comments(source))
     seg_titles: list[tuple[int, str]] = [(0, "")]
-    seg_starts: list[int] = [0]
+    pieces: list[str]
     if path.suffix.lower() == ".tex":
         source = inline_inputs(
             source,
@@ -889,39 +902,39 @@ def analyze_file(
         segments = split_sections(body)
         if abstract:
             segments.insert(0, (1, "Abstract", abstract))
-        seg_titles, seg_starts, pieces = [], [], []
-        pos = 0
+        seg_titles, pieces = [], []
         strip_title = LatexNodes2Text(math_mode="remove")
         for level, title, seg_body in segments:
             prose = strip_latex(seg_body)
             if not prose and not title:
                 continue
             seg_titles.append((level, strip_title.latex_to_text(title).strip()))
-            seg_starts.append(pos)
             pieces.append(prose)
-            pos += len(prose) + 2  # the "\n\n" joiner
         text = "\n\n".join(pieces)
     else:
         text = source
+        pieces = [text]
     if not text:
         raise NoProseError("no prose found after stripping LaTeX markup")
     if len(text) > MAX_DOCUMENT_CHARS:
         raise DocumentTooLargeError(
             f"expanded prose is {len(text):,} characters; limit is {MAX_DOCUMENT_CHARS:,}"
         )
-    nlp.max_length = max(len(text) + 1, nlp.max_length)
-    doc = nlp(text)
-    sents = list(doc.sents)
-    if not any(sum(token.is_alpha for token in sent) >= 3 for sent in sents):
+    nlp.max_length = max(max((len(piece) for piece in pieces), default=0) + 1, nlp.max_length)
+    segmented_sents = [
+        (segment_index, sent)
+        for segment_index, doc in enumerate(nlp.pipe(pieces))
+        for sent in doc.sents
+    ]
+    if not any(sum(token.is_alpha for token in sent) >= 3 for _, sent in segmented_sents):
         raise NoProseError("no prose sentences with at least three words found")
 
     stats: list[SentenceStats] = []
     last_seen: dict[str, int] = {}
-    from bisect import bisect_right
 
-    for idx, sent in enumerate(sents):
+    for idx, (segment_index, sent) in enumerate(segmented_sents):
         st = analyze_sentence(sent, idx, last_seen)
-        st.seg = max(0, bisect_right(seg_starts, sent.start_char) - 1)
+        st.seg = segment_index
         stats.append(st)
         for tok in sent:
             if tok.pos_ in ("NOUN", "PROPN"):

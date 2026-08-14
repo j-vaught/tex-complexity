@@ -63,20 +63,33 @@ _WORD_THRESHOLD = 0.25
 
 
 def _word_color(w: float) -> str:
-    # Yellow -> red; plain words get no highlight at all.
-    return _color(0.5 + min(w, 1.0) / 2)
+    if w < 0.5:
+        return _color(0.5)
+    if w < 0.8:
+        return _color(0.75)
+    return _color(1.0)
+
+
+def _word_ink(w: float) -> str:
+    if w < 0.5:
+        return _ink(0.5)
+    if w < 0.8:
+        return _ink(0.75)
+    return _ink(1.0)
 
 
 def _word_run(group: list[SentenceStats]) -> str:
     body = []
     for s in group:
+        if not s.word_scores:
+            body.append(f"{_esc(s.text)} ")
+            continue
         for token, w in s.word_scores:
             text, ws = token.rstrip(), token[len(token.rstrip()) :]
             if w >= _WORD_THRESHOLD and text:
-                t = 0.5 + min(w, 1.0) / 2
                 body.append(
                     f'#highlight(fill: rgb("{_word_color(w)}"), top-edge: 0.9em, '
-                    f'bottom-edge: -0.25em)[#text(fill: rgb("{_ink(t)}"))'
+                    f'bottom-edge: -0.25em)[#text(fill: rgb("{_word_ink(w)}"))'
                     f"[{_esc(text)}]]{_esc(ws)}"
                 )
             else:
@@ -110,21 +123,25 @@ def render_metric_pdf(
     per_word = metric_key == "word"
     if per_word:
         describe = (
-            "Each word is highlighted by how rare it is in general English "
-            "(Zipf corpus frequency). Common words are left plain; unknown "
-            "words, acronyms, and coined terms score highest."
+            "Words are highlighted when they are polysyllabic (3+ syllables) "
+            "or rare in general English (Zipf frequency below 3.5). Intensity "
+            "increases with syllable count and rarity."
         )
         legend = (
-            "plain = common  "
+            "plain = simple  "
             + f'#highlight(fill: rgb("{_word_color(0.3)}"))'
-            + f'[#text(fill: rgb("{_ink(0.65)}"))[ uncommon ]]  '
+            + f'[#text(fill: rgb("{_word_ink(0.3)}"))[ moderately complex ]]  '
             + f'#highlight(fill: rgb("{_word_color(0.6)}"))'
-            + f'[#text(fill: rgb("{_ink(0.8)}"))[ rare ]]  '
+            + f'[#text(fill: rgb("{_word_ink(0.6)}"))[ complex ]]  '
             + f'#highlight(fill: rgb("{_word_color(1.0)}"))'
-            + f'[#text(fill: rgb("{_ink(1.0)}"))[ very rare / unknown ]]'
+            + f'[#text(fill: rgb("{_word_ink(1.0)}"))[ very complex ]]'
         )
     else:
         legend = _legend(lo, hi, fmt)
+    if not seg_titles:
+        seg_titles = [(0, "")]
+    if any(stat.seg < 0 or stat.seg >= len(seg_titles) for stat in stats):
+        raise RenderError("sentence section index is outside the supplied section list")
     lines = [
         "#set page(margin: 2cm)",
         '#set text(size: 10pt, font: "New Computer Modern")',

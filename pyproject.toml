@@ -1,0 +1,26 @@
+[project]
+name = "tex-complexity"
+version = "0.1.0"
+description = "Writing-complexity statistics for LaTeX documents"
+readme = "README.md"
+authors = [{ name = "J.C. Vaught", email = "jvaught@sc.edu" }]
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "spacy>=3.8",
+    "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
+    "pylatexenc>=2.10",
+    "textstat>=0.7",
+    "wordfreq>=3.1",
+    "fastcoref>=2.1.6",
+    "transformers>=4.40,<5",
+]
+
+[project.scripts]
+texstats = "tex_complexity.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.7.19,<0.9.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100

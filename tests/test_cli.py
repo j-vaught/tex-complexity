@@ -92,13 +92,24 @@ def test_highlight_output_names_preserve_complete_input_filename(tmp_path: Path)
 
 
 @pytest.mark.skipif(shutil.which("typst") is None, reason="Typst is not installed")
-def test_cli_preflights_duplicate_highlight_outputs(tmp_path: Path) -> None:
+def test_cli_preflights_duplicate_highlight_outputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     source = tmp_path / "sample.txt"
     source.write_text("Several valid words form a complete sentence.", encoding="utf-8")
     output = cli._highlight_output_path(source, "sentence")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["texstats", str(source), str(source), "--highlight", "sentence", "--force"],
+    )
 
-    result = run_cli(source, source, "--highlight", "sentence", "--force")
+    with pytest.raises(SystemExit) as exit_info:
+        cli._run()
+    captured = capsys.readouterr()
 
-    assert result.returncode == 1
-    assert "multiple requested highlights target the same PDF" in result.stderr
+    assert exit_info.value.code == 1
+    assert "multiple requested highlights target the same PDF" in captured.err
     assert not output.exists()

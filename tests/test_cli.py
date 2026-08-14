@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import io
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+import spacy
+from spacy.language import Language
 
 from tex_complexity import cli
 
@@ -184,3 +187,74 @@ def test_cli_rejects_hard_linked_output_aliases(
     assert "highlighted PDF would overwrite requested input" in captured.err
     assert protected_input.read_bytes() == original
     assert output.read_bytes() == original
+
+
+def test_cli_continues_after_input_inspection_error(
+    tmp_path: Path,
+    nlp: Language,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    inaccessible = tmp_path / "inaccessible.txt"
+    valid = tmp_path / "valid.txt"
+    valid.write_text("Several valid words form a complete sentence.", encoding="utf-8")
+    original_is_file = Path.is_file
+
+    def guarded_is_file(path: Path) -> bool:
+        if path == inaccessible:
+            raise PermissionError("access denied")
+        return original_is_file(path)
+
+    monkeypatch.setattr(Path, "is_file", guarded_is_file)
+    monkeypatch.setattr(spacy, "load", lambda _: nlp)
+    monkeypatch.setattr(sys, "argv", ["texstats", str(inaccessible), str(valid), "--top", "1"])
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli._run()
+    captured = capsys.readouterr()
+
+    assert exit_info.value.code == 1
+    assert "could not inspect input: access denied" in captured.err
+    assert "SENTENCE COMPLEXITY" in captured.out
+
+
+@pytest.mark.skipif(shutil.which("typst") is None, reason="Typst is not installed")
+def test_cli_finishes_batch_work_after_stdout_closes(
+    tmp_path: Path,
+    nlp: Language,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class BrokenStdout:
+        closed = False
+
+        def write(self, _: str) -> int:
+            raise BrokenPipeError
+
+        def flush(self) -> None:
+            pass
+
+        def close(self) -> None:
+            self.closed = True
+
+    missing = tmp_path / "missing.txt"
+    valid = tmp_path / "valid.txt"
+    valid.write_text("Several valid words form a complete sentence.", encoding="utf-8")
+    output = cli._highlight_output_path(valid, "sentence")
+    broken_stdout = BrokenStdout()
+    stderr = io.StringIO()
+    monkeypatch.setattr(spacy, "load", lambda _: nlp)
+    monkeypatch.setattr(sys, "stdout", broken_stdout)
+    monkeypatch.setattr(sys, "stderr", stderr)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["texstats", str(missing), str(valid), "--highlight", "sentence"],
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli._run()
+
+    assert exit_info.value.code == 1
+    assert broken_stdout.closed
+    assert "input file not found" in stderr.getvalue()
+    assert output.read_bytes().startswith(b"%PDF-")

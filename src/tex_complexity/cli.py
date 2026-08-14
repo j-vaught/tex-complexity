@@ -1080,6 +1080,22 @@ def _run() -> None:
     )
     args = ap.parse_args()
 
+    stdout_broken = False
+
+    def emit(message: str) -> None:
+        """Write normal output without abandoning remaining batch work."""
+        nonlocal stdout_broken
+        if stdout_broken:
+            return
+        try:
+            print(message)
+        except BrokenPipeError:
+            stdout_broken = True
+            try:
+                sys.stdout.close()
+            except (BrokenPipeError, OSError):
+                pass
+
     if args.highlight and shutil.which("typst") is None:
         print(
             "texstats: error: --highlight requires the 'typst' executable on PATH", file=sys.stderr
@@ -1194,8 +1210,8 @@ def _run() -> None:
             print(f"texstats: error: {path}: {exc}", file=sys.stderr)
             failed = True
             continue
-        print(f"\n{path}  ({len(text.split())} words after markup stripping)\n")
-        print(report(stats, args.top, args.all))
+        emit(f"\n{path}  ({len(text.split())} words after markup stripping)\n")
+        emit(report(stats, args.top, args.all))
         if args.highlight:
             from .highlight import RenderError, render_metric_pdf
 
@@ -1215,7 +1231,7 @@ def _run() -> None:
                     print(f"texstats: error: {path}: {exc}", file=sys.stderr)
                     failed = True
                     break
-                print(f"  wrote {out_pdf}")
+                emit(f"  wrote {out_pdf}")
     if failed:
         raise SystemExit(1)
 

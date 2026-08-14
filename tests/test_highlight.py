@@ -104,3 +104,24 @@ def test_render_metric_pdf_rejects_invalid_section_index(tmp_path: Path) -> None
 
     with pytest.raises(RenderError, match="section index"):
         render_metric_pdf([stats], [(0, "")], "sentence", "sample.tex", tmp_path / "x.pdf")
+
+
+@pytest.mark.skipif(shutil.which("typst") is None, reason="Typst is not installed")
+def test_render_metric_pdf_atomically_replaces_hard_link(tmp_path: Path) -> None:
+    protected = tmp_path / "protected.txt"
+    original = b"This unrelated file must remain unchanged."
+    protected.write_bytes(original)
+    output = tmp_path / "sample.pdf"
+    output.hardlink_to(protected)
+
+    render_metric_pdf(
+        [sample_stats()],
+        [(0, "")],
+        "sentence",
+        "sample.tex",
+        output,
+    )
+
+    assert protected.read_bytes() == original
+    assert output.read_bytes().startswith(b"%PDF-")
+    assert not output.samefile(protected)

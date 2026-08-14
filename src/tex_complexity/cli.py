@@ -981,6 +981,15 @@ def _highlight_output_path(path: Path, metric: str) -> Path:
     return path.with_name(f"{path.name}_{metric}.pdf")
 
 
+def _existing_file_identity(path: Path) -> tuple[int, int] | None:
+    """Return a filesystem identity for an existing path, following links."""
+    try:
+        stat_result = path.stat()
+    except FileNotFoundError:
+        return None
+    return stat_result.st_dev, stat_result.st_ino
+
+
 def _run() -> None:
     ap = argparse.ArgumentParser(
         prog="texstats",
@@ -1022,7 +1031,13 @@ def _run() -> None:
     failed = False
     paths: list[Path] = []
     for path in args.files:
-        if path.is_file():
+        try:
+            is_file = path.is_file()
+        except OSError as exc:
+            print(f"texstats: error: {path}: could not inspect input: {exc}", file=sys.stderr)
+            failed = True
+            continue
+        if is_file:
             paths.append(path)
         else:
             print(f"texstats: error: {path}: input file not found", file=sys.stderr)
@@ -1034,12 +1049,32 @@ def _run() -> None:
     if args.highlight:
         keys = list(METRICS) if args.highlight == "all" else [args.highlight]
         requested_inputs = {path.resolve(): path for path in paths}
+        try:
+            requested_file_ids = {
+                identity: path
+                for path in paths
+                if (identity := _existing_file_identity(path)) is not None
+            }
+        except OSError as exc:
+            print(f"texstats: error: could not inspect requested inputs: {exc}", file=sys.stderr)
+            raise SystemExit(1) from exc
         claimed_outputs: dict[Path, tuple[Path, str]] = {}
+        claimed_output_ids: dict[tuple[int, int], tuple[Path, str]] = {}
         for path in paths:
             for key in keys:
                 out_pdf = _highlight_output_path(path, key)
                 destination = out_pdf.resolve()
+                try:
+                    output_identity = _existing_file_identity(out_pdf)
+                except OSError as exc:
+                    print(
+                        f"texstats: error: {out_pdf}: could not inspect output: {exc}",
+                        file=sys.stderr,
+                    )
+                    raise SystemExit(1) from exc
                 colliding_input = requested_inputs.get(destination)
+                if colliding_input is None and output_identity is not None:
+                    colliding_input = requested_file_ids.get(output_identity)
                 if colliding_input is not None:
                     print(
                         f"texstats: error: {out_pdf}: highlighted PDF would overwrite "
@@ -1048,6 +1083,8 @@ def _run() -> None:
                     )
                     raise SystemExit(1)
                 previous = claimed_outputs.get(destination)
+                if previous is None and output_identity is not None:
+                    previous = claimed_output_ids.get(output_identity)
                 if previous is not None:
                     previous_path, previous_key = previous
                     print(
@@ -1057,6 +1094,8 @@ def _run() -> None:
                     )
                     raise SystemExit(1)
                 claimed_outputs[destination] = (path, key)
+                if output_identity is not None:
+                    claimed_output_ids[output_identity] = (path, key)
                 highlight_plan.append((path, key, out_pdf))
         if not args.force:
             existing_outputs = [out_pdf for _, _, out_pdf in highlight_plan if out_pdf.exists()]

@@ -175,19 +175,20 @@ def render_metric_pdf(
             else:
                 lines.append(_sentence_run(group, score_fn, lo, hi, fmt))
             any_content = True
-    with tempfile.NamedTemporaryFile("w", suffix=".typ", delete=False, encoding="utf-8") as f:
-        f.write("\n".join(lines))
-        typ_path = Path(f.name)
-    try:
-        subprocess.run(
-            ["typst", "compile", str(typ_path), str(out_pdf)],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except subprocess.CalledProcessError as e:
-        raise RenderError(f"typst compile failed for {out_pdf.name}:\n{e.stderr}") from e
-    except FileNotFoundError as exc:
-        raise RenderError("the 'typst' executable was not found") from exc
-    finally:
-        typ_path.unlink(missing_ok=True)
+    with tempfile.TemporaryDirectory(prefix=f".{out_pdf.name}.", dir=out_pdf.parent) as temp_dir:
+        temp_root = Path(temp_dir)
+        typ_path = temp_root / "highlight.typ"
+        temp_pdf = temp_root / "highlight.pdf"
+        typ_path.write_text("\n".join(lines), encoding="utf-8")
+        try:
+            subprocess.run(
+                ["typst", "compile", str(typ_path), str(temp_pdf)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            temp_pdf.replace(out_pdf)
+        except subprocess.CalledProcessError as e:
+            raise RenderError(f"typst compile failed for {out_pdf.name}:\n{e.stderr}") from e
+        except FileNotFoundError as exc:
+            raise RenderError("the 'typst' executable was not found") from exc

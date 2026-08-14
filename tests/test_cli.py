@@ -148,3 +148,39 @@ def test_cli_never_overwrites_an_input_with_a_highlight(
     assert "highlighted PDF would overwrite requested input" in captured.err
     assert protected_input.read_bytes() == original
     assert not later_output.exists()
+
+
+@pytest.mark.skipif(shutil.which("typst") is None, reason="Typst is not installed")
+def test_cli_rejects_hard_linked_output_aliases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = tmp_path / "manuscript.txt"
+    source.write_text("Several valid words form a complete sentence.", encoding="utf-8")
+    protected_input = tmp_path / "protected.txt"
+    original = b"Another requested input sentence must remain unchanged."
+    protected_input.write_bytes(original)
+    output = cli._highlight_output_path(source, "sentence")
+    output.hardlink_to(protected_input)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "texstats",
+            str(source),
+            str(protected_input),
+            "--highlight",
+            "sentence",
+            "--force",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli._run()
+    captured = capsys.readouterr()
+
+    assert exit_info.value.code == 1
+    assert "highlighted PDF would overwrite requested input" in captured.err
+    assert protected_input.read_bytes() == original
+    assert output.read_bytes() == original

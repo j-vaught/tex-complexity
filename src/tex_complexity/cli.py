@@ -1033,11 +1033,20 @@ def _run() -> None:
     highlight_plan: list[tuple[Path, str, Path]] = []
     if args.highlight:
         keys = list(METRICS) if args.highlight == "all" else [args.highlight]
+        requested_inputs = {path.resolve(): path for path in paths}
         claimed_outputs: dict[Path, tuple[Path, str]] = {}
         for path in paths:
             for key in keys:
                 out_pdf = _highlight_output_path(path, key)
                 destination = out_pdf.resolve()
+                colliding_input = requested_inputs.get(destination)
+                if colliding_input is not None:
+                    print(
+                        f"texstats: error: {out_pdf}: highlighted PDF would overwrite "
+                        f"requested input {colliding_input}",
+                        file=sys.stderr,
+                    )
+                    raise SystemExit(1)
                 previous = claimed_outputs.get(destination)
                 if previous is not None:
                     previous_path, previous_key = previous

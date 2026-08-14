@@ -113,3 +113,38 @@ def test_cli_preflights_duplicate_highlight_outputs(
     assert exit_info.value.code == 1
     assert "multiple requested highlights target the same PDF" in captured.err
     assert not output.exists()
+
+
+@pytest.mark.skipif(shutil.which("typst") is None, reason="Typst is not installed")
+def test_cli_never_overwrites_an_input_with_a_highlight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = tmp_path / "manuscript.txt"
+    source.write_text("Several valid words form a complete sentence.", encoding="utf-8")
+    protected_input = cli._highlight_output_path(source, "sentence")
+    original = b"Another valid input sentence must remain unchanged."
+    protected_input.write_bytes(original)
+    later_output = cli._highlight_output_path(protected_input, "sentence")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "texstats",
+            str(source),
+            str(protected_input),
+            "--highlight",
+            "sentence",
+            "--force",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli._run()
+    captured = capsys.readouterr()
+
+    assert exit_info.value.code == 1
+    assert "highlighted PDF would overwrite requested input" in captured.err
+    assert protected_input.read_bytes() == original
+    assert not later_output.exists()

@@ -18,9 +18,9 @@ Inspect the wheel and source archive, including the version, console entry point
 After the release preparation is merged and the remote checks pass, create an annotated tag and publish the corresponding GitHub release.
 
 ```shell
-git tag -a v0.1.0 -m "Release 0.1.0"
-git push origin v0.1.0
-gh release create v0.1.0 --verify-tag --generate-notes --title "tex-complexity 0.1.0"
+git tag -a v0.1.1 -m "Release 0.1.1"
+git push origin v0.1.1
+gh release create v0.1.1 --verify-tag --generate-notes --title "tex-complexity 0.1.1"
 ```
 
 Verify the release page and install from the exact tag with the README command. Do not reuse or move a published version tag.

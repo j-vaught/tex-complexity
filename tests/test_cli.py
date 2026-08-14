@@ -26,7 +26,7 @@ def test_help_and_version_are_available() -> None:
     assert help_result.returncode == 0
     assert "usage: texstats" in help_result.stdout
     assert version_result.returncode == 0
-    assert version_result.stdout.startswith("texstats 0.1.0")
+    assert version_result.stdout.startswith("texstats 0.1.1")
 
 
 def test_cli_analyzes_plain_text(tmp_path: Path) -> None:

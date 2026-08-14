@@ -13,14 +13,14 @@ The tool is a revision aid, not a universal score of writing quality. Its thresh
 The supported runtime is Python 3.11 or 3.12. The recommended installer is [uv](https://docs.astral.sh/uv/). A one-off analysis from the tagged GitHub release uses the following command.
 
 ```shell
-uvx --from "tex-complexity @ git+https://github.com/j-vaught/tex-complexity.git@v0.1.0" \
+uvx --from "tex-complexity @ git+https://github.com/j-vaught/tex-complexity.git@v0.1.1" \
   texstats paper.tex
 ```
 
 A persistent installation uses the same release.
 
 ```shell
-uv tool install "tex-complexity @ git+https://github.com/j-vaught/tex-complexity.git@v0.1.0"
+uv tool install "tex-complexity @ git+https://github.com/j-vaught/tex-complexity.git@v0.1.1"
 texstats paper.tex
 ```
 

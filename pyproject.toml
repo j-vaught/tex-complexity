@@ -1,6 +1,6 @@
 [project]
 name = "tex-complexity"
-version = "0.1.0"
+version = "0.1.1"
 description = "Writing-complexity statistics for LaTeX documents"
 readme = "README.md"
 authors = [{ name = "J.C. Vaught", email = "jvaught@sc.edu" }]

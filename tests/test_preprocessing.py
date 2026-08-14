@@ -115,6 +115,16 @@ def test_inline_inputs_reject_missing_cycle_and_outside_paths(tmp_path: Path) ->
     assert "Outside prose." in cli.inline_inputs(r"\input{../outside}", project, allow_outside=True)
 
 
+def test_inline_inputs_stop_before_expansion_exceeds_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "leaf.tex").write_text("word " * 12, encoding="utf-8")
+    monkeypatch.setattr(cli, "MAX_DOCUMENT_CHARS", 100)
+
+    with pytest.raises(cli.DocumentTooLargeError, match="100-character limit"):
+        cli.inline_inputs(r"\input{leaf}\input{leaf}", tmp_path)
+
+
 def test_load_aux_follows_child_files_without_leaving_root(tmp_path: Path) -> None:
     (tmp_path / "main.aux").write_text(
         r"\bibcite{main}{2}\newlabel{sec:main}{{I}{1}}\@input{chapter.aux}",
@@ -192,6 +202,25 @@ def test_analyze_file_removes_comments_and_non_prose(tmp_path: Path, nlp: Langua
     assert "Hidden reference" not in text
     assert stats
     assert (1, "I. Introduction") in titles
+
+
+def test_analyze_file_preserves_standard_hyperlink_labels(tmp_path: Path, nlp: Language) -> None:
+    tex = tmp_path / "hyperlink.tex"
+    tex.write_text(
+        r"""
+        \begin{document}
+        Visit \href{https://example.com}{the project page} for complete documentation.
+        The following sentence remains available for analysis.
+        \end{document}
+        """,
+        encoding="utf-8",
+    )
+
+    text, stats, _ = cli.analyze_file(tex, nlp)
+
+    assert "the project page" in text
+    assert "https://example.com" not in text
+    assert len(stats) == 2
 
 
 def test_analyze_file_keeps_unpunctuated_sections_separate(tmp_path: Path, nlp: Language) -> None:

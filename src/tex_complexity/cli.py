@@ -233,6 +233,8 @@ INLINE_VERBATIM_RE = re.compile(
     r"\\verb\*?(?![A-Za-z@])(?P<delimiter>[^\s])"
     r"(?:(?!(?P=delimiter))[^\r\n])*(?P=delimiter)"
 )
+INCLUDE_RE = re.compile(r"\\(input|include)\{([^}]+)\}")
+HREF_RE = re.compile(r"\\href\s*\{[^{}\r\n]*\}\{((?:[^{}]|\{[^{}]*\})*)\}")
 _ANAPHORIC_PATTERNS = [
     (phrase, re.compile(rf"(?<!\w){re.escape(phrase)}(?!\w)", re.IGNORECASE))
     for phrase in ANAPHORIC_PHRASES
@@ -253,6 +255,10 @@ class IncludeError(ValueError):
 
 class DocumentTooLargeError(ValueError):
     """Raised when expanded prose exceeds the parser's safety limit."""
+
+
+class LatexConversionError(ValueError):
+    """Raised when supported LaTeX cannot be converted to plain text."""
 
 
 def remove_inline_verbatim(source: str) -> str:
@@ -330,12 +336,31 @@ def inline_inputs(
     allow_outside: bool = False,
 ) -> str:
     """Recursively expand \\input{...} and \\include{...} relative to base_dir."""
+    active_paths = set() if active_paths is None else active_paths
+    return _inline_inputs(
+        source,
+        base_dir,
+        depth,
+        active_paths,
+        allow_outside,
+        MAX_DOCUMENT_CHARS,
+    )
+
+
+def _inline_inputs(
+    source: str,
+    base_dir: Path,
+    depth: int,
+    active_paths: set[Path],
+    allow_outside: bool,
+    char_limit: int,
+) -> str:
+    """Expand includes without constructing text beyond the document limit."""
     source = remove_inline_verbatim(source)
     if depth >= MAX_INCLUDE_DEPTH:
         raise IncludeError(f"include nesting exceeds {MAX_INCLUDE_DEPTH} levels")
-    active_paths = set() if active_paths is None else active_paths
 
-    def repl(m: re.Match[str]) -> str:
+    def expand_match(m: re.Match[str], remaining_chars: int) -> str:
         rel = m.group(2)
         path = base_dir / rel
         if path.suffix == "":
@@ -347,27 +372,57 @@ def inline_inputs(
         root = base_dir.resolve()
         if not allow_outside and not path.is_relative_to(root):
             raise UnsafeIncludeError(f"include escapes the document directory: {rel}")
-        if not path.is_file():
-            raise IncludeError(f"included file not found: {rel}")
+        try:
+            if not path.is_file():
+                raise IncludeError(f"included file not found: {rel}")
+        except OSError as exc:
+            raise IncludeError(f"could not inspect included file: {rel}") from exc
         if path in active_paths:
             raise IncludeError(f"cyclic include detected: {rel}")
         active_paths.add(path)
         try:
             included = path.read_text(encoding="utf-8", errors="replace")
             included = preprocess_tex(included)
-            return inline_inputs(
+            return _inline_inputs(
                 included,
                 base_dir,
                 depth + 1,
                 active_paths,
                 allow_outside,
+                remaining_chars,
             )
         except OSError as exc:
             raise IncludeError(f"could not read included file: {rel}") from exc
         finally:
             active_paths.remove(path)
 
-    return re.sub(r"\\(input|include)\{([^}]+)\}", repl, source)
+    pieces: list[str] = []
+    cursor = 0
+    expanded_chars = 0
+    for match in INCLUDE_RE.finditer(source):
+        literal = source[cursor : match.start()]
+        expanded_chars += len(literal)
+        if expanded_chars > char_limit:
+            raise DocumentTooLargeError(
+                f"expanded TeX exceeds the {MAX_DOCUMENT_CHARS:,}-character limit"
+            )
+        pieces.append(literal)
+        replacement = expand_match(match, char_limit - expanded_chars)
+        expanded_chars += len(replacement)
+        if expanded_chars > char_limit:
+            raise DocumentTooLargeError(
+                f"expanded TeX exceeds the {MAX_DOCUMENT_CHARS:,}-character limit"
+            )
+        pieces.append(replacement)
+        cursor = match.end()
+    tail = source[cursor:]
+    expanded_chars += len(tail)
+    if expanded_chars > char_limit:
+        raise DocumentTooLargeError(
+            f"expanded TeX exceeds the {MAX_DOCUMENT_CHARS:,}-character limit"
+        )
+    pieces.append(tail)
+    return "".join(pieces)
 
 
 def load_aux(
@@ -530,7 +585,11 @@ def document_body(source: str) -> tuple[str, str]:
 def strip_latex(source: str) -> str:
     """Convert LaTeX source to plain prose, dropping math and float bodies."""
     source = remove_non_prose_environments(source)
-    text = LatexNodes2Text(math_mode="remove").latex_to_text(source)
+    source = HREF_RE.sub(r"\1", source)
+    try:
+        text = LatexNodes2Text(math_mode="remove").latex_to_text(source)
+    except (IndexError, TypeError, ValueError) as exc:
+        raise LatexConversionError(f"could not convert LaTeX markup: {exc}") from exc
     # Drop heading lines (pylatexenc renders \section{...} as "§ TITLE").
     text = re.sub(r"^\s*§+.*$", " ", text, flags=re.MULTILINE)
     # Collapse whitespace and drop leftover bracket junk.
@@ -930,12 +989,11 @@ def analyze_file(
         if abstract:
             segments.insert(0, (1, "Abstract", abstract))
         seg_titles, pieces = [], []
-        strip_title = LatexNodes2Text(math_mode="remove")
         for level, title, seg_body in segments:
             prose = strip_latex(seg_body)
             if not prose and not title:
                 continue
-            seg_titles.append((level, strip_title.latex_to_text(title).strip()))
+            seg_titles.append((level, strip_latex(title)))
             pieces.append(prose)
         text = "\n\n".join(pieces)
     else:
@@ -1128,6 +1186,7 @@ def _run() -> None:
         except (
             DocumentTooLargeError,
             IncludeError,
+            LatexConversionError,
             NoProseError,
             OSError,
             UnsafeIncludeError,

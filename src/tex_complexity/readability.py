@@ -45,7 +45,7 @@ def flesch_reading_ease(words: int, sentences: int, syllables: int) -> float:
 
 
 def flesch_kincaid_grade(words: int, sentences: int, syllables: int) -> float:
-    """Calculate the Flesch–Kincaid grade level from aggregate counts."""
+    """Calculate the Flesch-Kincaid grade level from aggregate counts."""
     return 0.39 * words / sentences + 11.8 * syllables / words - 15.59
 
 

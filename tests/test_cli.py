@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
+
+from tex_complexity import cli
 
 
 def run_cli(*arguments: object) -> subprocess.CompletedProcess[str]:
@@ -75,3 +80,25 @@ def test_cli_rejects_outside_include_by_default(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "include escapes the document directory" in result.stderr
+
+
+def test_highlight_output_names_preserve_complete_input_filename(tmp_path: Path) -> None:
+    text_output = cli._highlight_output_path(tmp_path / "collision.txt", "sentence")
+    tex_output = cli._highlight_output_path(tmp_path / "collision_txt.tex", "sentence")
+
+    assert text_output.name == "collision.txt_sentence.pdf"
+    assert tex_output.name == "collision_txt.tex_sentence.pdf"
+    assert text_output != tex_output
+
+
+@pytest.mark.skipif(shutil.which("typst") is None, reason="Typst is not installed")
+def test_cli_preflights_duplicate_highlight_outputs(tmp_path: Path) -> None:
+    source = tmp_path / "sample.txt"
+    source.write_text("Several valid words form a complete sentence.", encoding="utf-8")
+    output = cli._highlight_output_path(source, "sentence")
+
+    result = run_cli(source, source, "--highlight", "sentence", "--force")
+
+    assert result.returncode == 1
+    assert "multiple requested highlights target the same PDF" in result.stderr
+    assert not output.exists()

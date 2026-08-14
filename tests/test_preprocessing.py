@@ -149,6 +149,26 @@ def test_section_numbering_extends_past_twelve_and_twenty_six() -> None:
     assert subsection_segments[-1][1] == "AA. Part 27"
 
 
+def test_analyze_file_accepts_sectionless_tex(tmp_path: Path, nlp: Language) -> None:
+    tex = tmp_path / "sectionless.tex"
+    tex.write_text(
+        r"""
+        \documentclass{article}
+        \begin{document}
+        A complete sectionless document remains valid for analysis.
+        Another full sentence confirms the prose is preserved.
+        \end{document}
+        """,
+        encoding="utf-8",
+    )
+
+    text, stats, titles = cli.analyze_file(tex, nlp)
+
+    assert "sectionless document" in text
+    assert titles == [(0, "")]
+    assert {stat.seg for stat in stats} == {0}
+
+
 def test_analyze_file_removes_comments_and_non_prose(tmp_path: Path, nlp: Language) -> None:
     tex = tmp_path / "paper.tex"
     tex.write_text(

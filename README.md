@@ -96,7 +96,7 @@ texstats paper.tex --highlight referential
 texstats paper.tex --highlight all
 ```
 
-A TeX input named `paper.tex` produces files such as `paper_referential.pdf`. A plain-text input named `paper.txt` produces `paper_txt_referential.pdf`, which prevents collisions between same-stem inputs. Re-run with `--force` when replacement is intentional.
+A TeX input named `paper.tex` produces files such as `paper.tex_referential.pdf`. A plain-text input named `paper.txt` produces `paper.txt_referential.pdf`. Keeping the complete source filename prevents different input types from targeting the same output. Every destination is checked before analysis begins, and `--force` permits replacement only when each requested output remains unique. Re-run with `--force` when replacement is intentional.
 
 ## LaTeX handling
 

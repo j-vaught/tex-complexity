@@ -489,9 +489,9 @@ def split_sections(body: str) -> list[tuple[int, str, str]]:
     """
     pat = re.compile(r"\\(section|subsection|subsubsection)\*?\{((?:[^{}]|\{[^{}]*\})*)\}")
     matches = list(pat.finditer(body))
-    segments: list[tuple[int, str, str]] = [
-        (0, "", body[: matches[0].start() if matches else None])
-    ]
+    if not matches:
+        return [(0, "", body)]
+    segments: list[tuple[int, str, str]] = [(0, "", body[: matches[0].start()])]
     n_sec = n_sub = n_subsub = 0
     for m, nxt in zip(matches, [*matches[1:], None], strict=True):
         kind, title = m.group(1), m.group(2)
@@ -976,6 +976,11 @@ def _positive_int(value: str) -> int:
     return parsed
 
 
+def _highlight_output_path(path: Path, metric: str) -> Path:
+    """Return an output name that preserves the complete input filename."""
+    return path.with_name(f"{path.name}_{metric}.pdf")
+
+
 def _run() -> None:
     ap = argparse.ArgumentParser(
         prog="texstats",
@@ -1025,6 +1030,35 @@ def _run() -> None:
     if not paths:
         raise SystemExit(1)
 
+    highlight_plan: list[tuple[Path, str, Path]] = []
+    if args.highlight:
+        keys = list(METRICS) if args.highlight == "all" else [args.highlight]
+        claimed_outputs: dict[Path, tuple[Path, str]] = {}
+        for path in paths:
+            for key in keys:
+                out_pdf = _highlight_output_path(path, key)
+                destination = out_pdf.resolve()
+                previous = claimed_outputs.get(destination)
+                if previous is not None:
+                    previous_path, previous_key = previous
+                    print(
+                        f"texstats: error: {out_pdf}: multiple requested highlights target "
+                        f"the same PDF ({previous_path} [{previous_key}] and {path} [{key}])",
+                        file=sys.stderr,
+                    )
+                    raise SystemExit(1)
+                claimed_outputs[destination] = (path, key)
+                highlight_plan.append((path, key, out_pdf))
+        if not args.force:
+            existing_outputs = [out_pdf for _, _, out_pdf in highlight_plan if out_pdf.exists()]
+            if existing_outputs:
+                for out_pdf in existing_outputs:
+                    print(
+                        f"texstats: error: {out_pdf}: output exists; pass --force to overwrite",
+                        file=sys.stderr,
+                    )
+                raise SystemExit(1)
+
     import spacy
 
     try:
@@ -1058,14 +1092,9 @@ def _run() -> None:
         if args.highlight:
             from .highlight import RenderError, render_metric_pdf
 
-            keys = list(METRICS) if args.highlight == "all" else [args.highlight]
-            for key in keys:
-                source_stem = (
-                    path.stem
-                    if path.suffix.lower() == ".tex"
-                    else f"{path.stem}_{path.suffix.lstrip('.').lower() or 'text'}"
-                )
-                out_pdf = path.with_name(f"{source_stem}_{key}.pdf")
+            for planned_path, key, out_pdf in highlight_plan:
+                if planned_path != path:
+                    continue
                 if out_pdf.exists() and not args.force:
                     print(
                         f"texstats: error: {out_pdf}: output exists; pass --force to overwrite",

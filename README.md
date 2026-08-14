@@ -102,7 +102,7 @@ A TeX input named `paper.tex` produces files such as `paper_referential.pdf`. A 
 
 The analyzer expands literal `\input{...}` and `\include{...}` commands relative to the main document directory. Nested paths follow standard main-root TeX behavior. Missing files, cycles, and more than 20 include levels produce clear errors. Includes that resolve outside the document directory are blocked unless `--allow-outside-includes` is present.
 
-Comments are removed before includes are expanded. Math, floats, tables, algorithms, listings, verbatim blocks, TikZ pictures, bibliographies, and the preamble are excluded from prose. When a sibling `.aux` file exists, citation numbers and cross-reference labels are recovered from it and its `\@input` children. Unresolved citations receive stable fallback numbers, and unresolved references appear as `?`.
+Comments are removed before includes are expanded. Math, floats, tables, algorithms, listings, inline `\verb` spans, verbatim blocks, TikZ pictures, bibliographies, and the preamble are excluded from prose. When a sibling `.aux` file exists, citation numbers and cross-reference labels are recovered from it and its `\@input` children. Unresolved citations receive stable fallback numbers, and unresolved references appear as `?`.
 
 The preprocessing layer intentionally supports common LaTeX forms rather than executing TeX. Macro-generated filenames, conditional includes, and custom environments may need a simplified analysis copy.
 

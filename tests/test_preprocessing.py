@@ -42,6 +42,48 @@ def test_remove_non_prose_environments_drops_bibliography_and_truncated_float() 
     assert "Hidden caption" not in cleaned
 
 
+def test_literal_environment_commands_do_not_consume_later_prose() -> None:
+    source = r"""
+    Before sentence.
+    \begin{verbatim}
+    \begin{figure}
+    \end{verbatim}
+    \begin{figure}
+    Real figure content.
+    \end{figure}
+    After sentence.
+    """
+
+    cleaned = cli.remove_non_prose_environments(cli.strip_comments(source))
+
+    assert "Before sentence." in cleaned
+    assert "After sentence." in cleaned
+    assert "Real figure content." not in cleaned
+    assert "\\begin{figure}" not in cleaned
+
+
+def test_inline_verbatim_commands_are_not_interpreted(tmp_path: Path, nlp: Language) -> None:
+    tex = tmp_path / "inline-verbatim.tex"
+    tex.write_text(
+        r"""
+        \begin{document}
+        \section{Examples}
+        The first complete sentence remains available for analysis.
+        Inline examples \verb|95% \input{missing}| and
+        \verb*+\end{document}+ are treated as literal code.
+        The final complete sentence remains visible after every example.
+        \end{document}
+        """,
+        encoding="utf-8",
+    )
+
+    text, stats, _ = cli.analyze_file(tex, nlp)
+
+    assert "final complete sentence" in text
+    assert "input{missing}" not in text
+    assert len([stat for stat in stats if stat.n_words >= 3]) == 3
+
+
 def test_inline_inputs_use_main_document_root(tmp_path: Path) -> None:
     chapter_dir = tmp_path / "chapters"
     chapter_dir.mkdir()

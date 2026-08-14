@@ -208,6 +208,10 @@ RARE_ZIPF_THRESHOLD = 3.5  # zipf < 3.5 ~ rarer than ~1 per 316,000 words
 MAX_INCLUDE_DEPTH = 20
 MAX_DOCUMENT_CHARS = 2_000_000
 NON_PROSE_ENVIRONMENTS = (
+    "verbatim",
+    "lstlisting",
+    "minted",
+    "comment",
     "equation",
     "align",
     "alignat",
@@ -221,14 +225,14 @@ NON_PROSE_ENVIRONMENTS = (
     "tabularx",
     "algorithm",
     "algorithmic",
-    "lstlisting",
-    "verbatim",
-    "minted",
     "tikzpicture",
     "thebibliography",
-    "comment",
 )
 LITERAL_ENVIRONMENTS = ("lstlisting", "verbatim", "minted")
+INLINE_VERBATIM_RE = re.compile(
+    r"\\verb\*?(?![A-Za-z@])(?P<delimiter>[^\s])"
+    r"(?:(?!(?P=delimiter))[^\r\n])*(?P=delimiter)"
+)
 _ANAPHORIC_PATTERNS = [
     (phrase, re.compile(rf"(?<!\w){re.escape(phrase)}(?!\w)", re.IGNORECASE))
     for phrase in ANAPHORIC_PHRASES
@@ -249,6 +253,11 @@ class IncludeError(ValueError):
 
 class DocumentTooLargeError(ValueError):
     """Raised when expanded prose exceeds the parser's safety limit."""
+
+
+def remove_inline_verbatim(source: str) -> str:
+    """Remove inline verbatim spans before interpreting TeX commands."""
+    return INLINE_VERBATIM_RE.sub(" ", source)
 
 
 def remove_non_prose_environments(source: str) -> str:
@@ -307,6 +316,12 @@ def strip_comments(source: str) -> str:
     return "".join(cleaned)
 
 
+def preprocess_tex(source: str) -> str:
+    """Remove literal code, comments, and non-prose environments safely."""
+    source = remove_inline_verbatim(source)
+    return remove_non_prose_environments(strip_comments(source))
+
+
 def inline_inputs(
     source: str,
     base_dir: Path,
@@ -315,6 +330,7 @@ def inline_inputs(
     allow_outside: bool = False,
 ) -> str:
     """Recursively expand \\input{...} and \\include{...} relative to base_dir."""
+    source = remove_inline_verbatim(source)
     if depth >= MAX_INCLUDE_DEPTH:
         raise IncludeError(f"include nesting exceeds {MAX_INCLUDE_DEPTH} levels")
     active_paths = set() if active_paths is None else active_paths
@@ -338,7 +354,7 @@ def inline_inputs(
         active_paths.add(path)
         try:
             included = path.read_text(encoding="utf-8", errors="replace")
-            included = remove_non_prose_environments(strip_comments(included))
+            included = preprocess_tex(included)
             return inline_inputs(
                 included,
                 base_dir,
@@ -900,7 +916,7 @@ def analyze_file(
     seg_titles: list[tuple[int, str]] = [(0, "")]
     pieces: list[str]
     if path.suffix.lower() == ".tex":
-        source = remove_non_prose_environments(strip_comments(source))
+        source = preprocess_tex(source)
         source = inline_inputs(
             source,
             path.parent,

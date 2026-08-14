@@ -4,7 +4,22 @@ version = "0.1.0"
 description = "Writing-complexity statistics for LaTeX documents"
 readme = "README.md"
 authors = [{ name = "J.C. Vaught", email = "jvaught@sc.edu" }]
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11,<3.13"
+keywords = ["latex", "readability", "technical-writing", "text-analysis", "typst"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Education",
+    "Intended Audience :: Science/Research",
+    "Natural Language :: English",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Text Processing :: Markup :: LaTeX",
+]
 dependencies = [
     "spacy>=3.8",
     "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl#sha256=1932429db727d4bff3deed6b34cfc05df17794f4a52eeb26cf8928f7c1a0fb85",
@@ -17,6 +32,12 @@ dependencies = [
 [project.scripts]
 texstats = "tex_complexity.cli:main"
 
+[project.urls]
+Homepage = "https://github.com/j-vaught/tex-complexity"
+Repository = "https://github.com/j-vaught/tex-complexity.git"
+Issues = "https://github.com/j-vaught/tex-complexity/issues"
+Changelog = "https://github.com/j-vaught/tex-complexity/blob/main/CHANGELOG.md"
+
 [dependency-groups]
 dev = [
     "pytest>=9.1,<10",
@@ -28,6 +49,21 @@ dev = [
 [build-system]
 requires = ["uv_build==0.12.4"]
 build-backend = "uv_build"
+
+[tool.uv]
+required-version = ">=0.11.14,<0.12"
+
+[tool.uv.build-backend]
+source-include = [
+    "CHANGELOG.md",
+    "CITATION.cff",
+    "CODE_OF_CONDUCT.md",
+    "CONTRIBUTING.md",
+    "RELEASING.md",
+    "SECURITY.md",
+    "examples/**",
+    "tests/**",
+]
 
 [tool.ruff]
 line-length = 100

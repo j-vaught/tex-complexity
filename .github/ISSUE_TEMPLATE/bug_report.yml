@@ -1,0 +1,55 @@
+name: "Bug report"
+description: "Report reproducible incorrect behavior."
+title: "[Bug] "
+labels:
+  - "bug"
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Thank you for reporting a problem. Use synthetic input and do not paste
+        confidential manuscript text, credentials, or unrelated local files.
+  - type: input
+    id: version
+    attributes:
+      label: "Version"
+      description: "Paste the output of texstats --version."
+      placeholder: "texstats 0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: "Environment"
+      description: "State the operating system, Python version, and Typst version when relevant."
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: "Minimal reproduction"
+      description: "Provide synthetic input and the exact command that demonstrates the problem."
+      render: "text"
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: "Expected behavior"
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: "Actual behavior"
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: "Submission checks"
+      options:
+        - label: "I removed confidential text and credentials from this report."
+          required: true
+        - label: "I searched existing issues for the same behavior."
+          required: true

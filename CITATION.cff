@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you use this software in academic work, please cite it using this metadata."
+title: "tex-complexity"
+type: software
+authors:
+  - family-names: "Vaught"
+    given-names: "J.C."
+    email: "jvaught@sc.edu"
+repository-code: "https://github.com/j-vaught/tex-complexity"
+url: "https://github.com/j-vaught/tex-complexity"
+version: 0.1.0
+date-released: 2026-08-14
+license: MIT
+abstract: >-
+  A command-line tool that measures writing complexity in English-language
+  LaTeX documents and renders optional highlighted PDF review views.
+keywords:
+  - LaTeX
+  - readability
+  - technical writing
+  - text analysis
+  - Typst

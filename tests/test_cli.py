@@ -227,11 +227,11 @@ def test_cli_finishes_batch_work_after_stdout_closes(
     class BrokenStdout:
         closed = False
 
-        def write(self, _: str) -> int:
-            raise BrokenPipeError
+        def write(self, value: str) -> int:
+            return len(value)
 
         def flush(self) -> None:
-            pass
+            raise BrokenPipeError
 
         def close(self) -> None:
             self.closed = True

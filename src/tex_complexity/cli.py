@@ -1088,7 +1088,7 @@ def _run() -> None:
         if stdout_broken:
             return
         try:
-            print(message)
+            print(message, flush=True)
         except BrokenPipeError:
             stdout_broken = True
             try:

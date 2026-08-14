@@ -18,16 +18,23 @@ from __future__ import annotations
 
 import argparse
 import re
+import shutil
 import statistics
 import sys
 from pathlib import Path
+from typing import Any
 
 from pylatexenc.latex2text import LatexNodes2Text
-from textstat import textstat
 from wordfreq import zipf_frequency
 
-from .coref import coref_distance_hits
+from . import __version__
 from .metrics import METRICS, SentenceStats
+from .readability import (
+    flesch_kincaid_grade,
+    flesch_reading_ease,
+    gunning_fog,
+    syllable_count,
+)
 
 SUBORDINATE_DEPS = {"advcl", "ccomp", "xcomp", "acl", "relcl", "csubj", "csubjpass"}
 SUBJECT_DEPS = {"nsubj", "nsubjpass", "csubj", "csubjpass"}
@@ -56,6 +63,20 @@ ANAPHORIC_PHRASES = [
     "such an",
 ]
 BARE_DEMONSTRATIVES = {"this", "that", "these", "those", "it"}
+THIRD_PERSON_PRONOUNS = {
+    "he",
+    "him",
+    "his",
+    "she",
+    "her",
+    "hers",
+    "it",
+    "its",
+    "they",
+    "them",
+    "their",
+    "theirs",
+}
 
 # Abstract "shell" nouns: they name a category, not a thing. A definite NP
 # headed by one of these ("the main target metric", "this paper's object of
@@ -180,39 +201,182 @@ NAMING_VERBS = {"define", "call", "denote", "term", "name", "refer", "introduce"
 RECENT_SENTS = 3  # referent mentioned within this many sentences = still in working memory
 DISTANT_SENTS = 5  # referent last mentioned further back than this = reader must flip back
 
-RARE_ZIPF_THRESHOLD = 3.5  # zipf < 3.5 ~ rarer than ~1 per 3M words
+RARE_ZIPF_THRESHOLD = 3.5  # zipf < 3.5 ~ rarer than ~1 per 316,000 words
+MAX_INCLUDE_DEPTH = 20
+MAX_DOCUMENT_CHARS = 2_000_000
+NON_PROSE_ENVIRONMENTS = (
+    "equation",
+    "align",
+    "alignat",
+    "gather",
+    "multline",
+    "displaymath",
+    "math",
+    "figure",
+    "table",
+    "tabular",
+    "tabularx",
+    "algorithm",
+    "algorithmic",
+    "lstlisting",
+    "verbatim",
+    "minted",
+    "tikzpicture",
+    "thebibliography",
+    "comment",
+)
+LITERAL_ENVIRONMENTS = ("lstlisting", "verbatim", "minted")
+_ANAPHORIC_PATTERNS = [
+    (phrase, re.compile(rf"(?<!\w){re.escape(phrase)}(?!\w)", re.IGNORECASE))
+    for phrase in ANAPHORIC_PHRASES
+]
 
 
-def inline_inputs(source: str, base_dir: Path, depth: int = 0) -> str:
+class NoProseError(ValueError):
+    """Raised when a source file contains no analyzable prose."""
+
+
+class UnsafeIncludeError(ValueError):
+    """Raised when a TeX include escapes the document directory."""
+
+
+class IncludeError(ValueError):
+    """Raised when a TeX include cannot be expanded safely and completely."""
+
+
+class DocumentTooLargeError(ValueError):
+    """Raised when expanded prose exceeds the parser's safety limit."""
+
+
+def remove_non_prose_environments(source: str) -> str:
+    """Remove environments whose contents should never enter prose analysis."""
+    for environment in NON_PROSE_ENVIRONMENTS:
+        source = re.sub(
+            rf"\\begin\{{{environment}\*?\}}.*?\\end\{{{environment}\*?\}}",
+            " ",
+            source,
+            flags=re.DOTALL,
+        )
+        source = re.sub(
+            rf"\\begin\{{{environment}\*?\}}.*\Z",
+            " ",
+            source,
+            flags=re.DOTALL,
+        )
+    return source
+
+
+def _strip_line_comment(line: str) -> str:
+    """Strip one TeX comment from a non-literal line."""
+    for index, char in enumerate(line):
+        if char != "%":
+            continue
+        backslashes = 0
+        cursor = index - 1
+        while cursor >= 0 and line[cursor] == "\\":
+            backslashes += 1
+            cursor -= 1
+        if backslashes % 2 == 0:
+            return line[:index] + ("\n" if line.endswith("\n") else "")
+    return line
+
+
+def strip_comments(source: str) -> str:
+    """Remove TeX comments while preserving escaped percent signs."""
+    cleaned: list[str] = []
+    literal_environment: str | None = None
+    for line in source.splitlines(keepends=True):
+        if literal_environment is not None:
+            end = re.search(rf"\\end\{{{literal_environment}\*?\}}", line)
+            if end is None:
+                cleaned.append(line)
+                continue
+            line = line[: end.end()] + _strip_line_comment(line[end.end() :])
+            literal_environment = None
+        else:
+            line = _strip_line_comment(line)
+        cleaned.append(line)
+        for environment in LITERAL_ENVIRONMENTS:
+            begin = re.search(rf"\\begin\{{{environment}\*?\}}", line)
+            if begin and not re.search(rf"\\end\{{{environment}\*?\}}", line[begin.end() :]):
+                literal_environment = environment
+                break
+    return "".join(cleaned)
+
+
+def inline_inputs(
+    source: str,
+    base_dir: Path,
+    depth: int = 0,
+    active_paths: set[Path] | None = None,
+    allow_outside: bool = False,
+) -> str:
     """Recursively expand \\input{...} and \\include{...} relative to base_dir."""
-    if depth > 5:
-        return source
+    if depth >= MAX_INCLUDE_DEPTH:
+        raise IncludeError(f"include nesting exceeds {MAX_INCLUDE_DEPTH} levels")
+    active_paths = set() if active_paths is None else active_paths
 
-    def repl(m: re.Match) -> str:
+    def repl(m: re.Match[str]) -> str:
         rel = m.group(2)
         path = base_dir / rel
         if path.suffix == "":
             path = path.with_suffix(".tex")
+        try:
+            path = path.resolve()
+        except OSError as exc:
+            raise IncludeError(f"could not resolve included file: {rel}") from exc
+        root = base_dir.resolve()
+        if not allow_outside and not path.is_relative_to(root):
+            raise UnsafeIncludeError(f"include escapes the document directory: {rel}")
         if not path.is_file():
-            return " "
-        return inline_inputs(
-            path.read_text(encoding="utf-8", errors="replace"), base_dir, depth + 1
-        )
+            raise IncludeError(f"included file not found: {rel}")
+        if path in active_paths:
+            raise IncludeError(f"cyclic include detected: {rel}")
+        active_paths.add(path)
+        try:
+            included = path.read_text(encoding="utf-8", errors="replace")
+            included = remove_non_prose_environments(strip_comments(included))
+            return inline_inputs(
+                included,
+                base_dir,
+                depth + 1,
+                active_paths,
+                allow_outside,
+            )
+        except OSError as exc:
+            raise IncludeError(f"could not read included file: {rel}") from exc
+        finally:
+            active_paths.remove(path)
 
     return re.sub(r"\\(input|include)\{([^}]+)\}", repl, source)
 
 
-def load_aux(aux_path: Path) -> tuple[dict[str, int], dict[str, str]]:
+def load_aux(
+    aux_path: Path,
+    root_dir: Path | None = None,
+    seen: set[Path] | None = None,
+) -> tuple[dict[str, int], dict[str, str]]:
     """Citation numbers and label values from a LaTeX .aux file."""
     cites: dict[str, int] = {}
     labels: dict[str, str] = {}
-    if not aux_path.is_file():
+    root_dir = aux_path.parent.resolve() if root_dir is None else root_dir
+    seen = set() if seen is None else seen
+    try:
+        aux_path = aux_path.resolve()
+    except OSError:
         return cites, labels
+    if not aux_path.is_file() or aux_path in seen or not aux_path.is_relative_to(root_dir):
+        return cites, labels
+    seen.add(aux_path)
     aux = aux_path.read_text(encoding="utf-8", errors="replace")
     for key, num in re.findall(r"\\bibcite\{([^}]*)\}\{(\d+)\}", aux):
         cites[key] = int(num)
     for key, val in re.findall(r"\\newlabel\{([^}]*)\}\{\{(.*?)\}\{", aux):
         labels[key] = re.sub(r"\\mbox\s*|\{|\}", "", val).strip()
+    for relative_path in re.findall(r"\\@input\{([^}]*)\}", aux):
+        child_cites, child_labels = load_aux(root_dir / relative_path, root_dir, seen)
+        cites.update(child_cites)
+        labels.update(child_labels)
     return cites, labels
 
 
@@ -240,13 +404,16 @@ def resolve_refs(source: str, cites: dict[str, int], labels: dict[str, str]) -> 
     Unresolvable keys fall back to sequential numbering (cites) or "?".
     """
     fallback: dict[str, int] = {}
+    next_fallback = max(cites.values(), default=0) + 1
 
     def cite_num(key: str) -> int:
+        nonlocal next_fallback
         key = key.strip()
         if key in cites:
             return cites[key]
         if key not in fallback:
-            fallback[key] = len(cites) + len(fallback) + 1
+            fallback[key] = next_fallback
+            next_fallback += 1
         return fallback[key]
 
     def cite_repl(m: re.Match) -> str:
@@ -256,12 +423,42 @@ def resolve_refs(source: str, cites: dict[str, int], labels: dict[str, str]) -> 
         val = labels.get(m.group(2).strip(), "?")
         return f"({val})" if m.group(1) == "eqref" else val
 
-    source = re.sub(r"\\cite[tp]?\*?(?:\[[^\]]*\])?\{([^}]*)\}", cite_repl, source)
+    source = re.sub(r"\\cite[tp]?\*?(?:\[[^\]]*\]){0,2}\{([^}]*)\}", cite_repl, source)
     source = re.sub(r"\\(ref|eqref|autoref|[cC]ref|pageref)\*?\{([^}]*)\}", ref_repl, source)
     return source
 
 
-_ROMAN = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII"]
+def _roman(value: int) -> str:
+    """Return a positive integer as an uppercase Roman numeral."""
+    numerals = (
+        (1000, "M"),
+        (900, "CM"),
+        (500, "D"),
+        (400, "CD"),
+        (100, "C"),
+        (90, "XC"),
+        (50, "L"),
+        (40, "XL"),
+        (10, "X"),
+        (9, "IX"),
+        (5, "V"),
+        (4, "IV"),
+        (1, "I"),
+    )
+    result: list[str] = []
+    for amount, numeral in numerals:
+        count, value = divmod(value, amount)
+        result.extend([numeral] * count)
+    return "".join(result)
+
+
+def _alpha(value: int) -> str:
+    """Return a one-based integer as A, B, ..., Z, AA, AB, and so on."""
+    result: list[str] = []
+    while value:
+        value, remainder = divmod(value - 1, 26)
+        result.append(chr(65 + remainder))
+    return "".join(reversed(result))
 
 
 def split_sections(body: str) -> list[tuple[int, str, str]]:
@@ -282,11 +479,11 @@ def split_sections(body: str) -> list[tuple[int, str, str]]:
         end = nxt.start() if nxt else len(body)
         if kind == "section":
             n_sec, n_sub, n_subsub = n_sec + 1, 0, 0
-            level, num = 1, _ROMAN[min(n_sec - 1, len(_ROMAN) - 1)]
+            level, num = 1, _roman(n_sec)
             display = f"{num}. {title}"
         elif kind == "subsection":
             n_sub, n_subsub = n_sub + 1, 0
-            level, display = 2, f"{chr(64 + n_sub)}. {title}"
+            level, display = 2, f"{_alpha(n_sub)}. {title}"
         else:
             n_subsub += 1
             level, display = 3, f"{n_subsub}) {title}"
@@ -313,23 +510,7 @@ def document_body(source: str) -> tuple[str, str]:
 
 def strip_latex(source: str) -> str:
     """Convert LaTeX source to plain prose, dropping math and float bodies."""
-    # Remove environments whose content is not prose.
-    for env in (
-        "equation",
-        "align",
-        "gather",
-        "figure",
-        "table",
-        "tabular",
-        "algorithm",
-        "algorithmic",
-        "lstlisting",
-        "verbatim",
-        "tikzpicture",
-    ):
-        source = re.sub(
-            rf"\\begin\{{{env}\*?\}}.*?\\end\{{{env}\*?\}}", " ", source, flags=re.DOTALL
-        )
+    source = remove_non_prose_environments(source)
     text = LatexNodes2Text(math_mode="remove").latex_to_text(source)
     # Drop heading lines (pylatexenc renders \section{...} as "§ TITLE").
     text = re.sub(r"^\s*§+.*$", " ", text, flags=re.MULTILINE)
@@ -339,7 +520,7 @@ def strip_latex(source: str) -> str:
 
 
 def vague_definite_hits(
-    sent, sent_idx: int, last_seen: dict[str, int], flag_distant: bool = True
+    sent: Any, sent_idx: int, last_seen: dict[str, int], flag_distant: bool = True
 ) -> tuple[list[str], int]:
     """Flag definite NPs the reader cannot resolve from the sentence itself.
 
@@ -403,7 +584,7 @@ def vague_definite_hits(
 
 
 def analyze_sentence(
-    sent,
+    sent: Any,
     sent_idx: int = 0,
     last_seen: dict[str, int] | None = None,
     count_pronouns: bool = True,
@@ -411,14 +592,18 @@ def analyze_sentence(
     words = [t for t in sent if t.is_alpha]
     n_words = len(words)
 
-    n_poly = sum(1 for t in words if textstat.syllable_count(t.text) >= 3)
-    n_rare = sum(
-        1
-        for t in words
-        if not t.is_stop
+    syllable_counts = [syllable_count(t.text) for t in words]
+    rare_flags = [
+        not t.is_stop
         and len(t.text) > 3
         and zipf_frequency(t.lemma_.lower(), "en") < RARE_ZIPF_THRESHOLD
-    )
+        for t in words
+    ]
+    poly_flags = [count >= 3 for count in syllable_counts]
+    n_syllables = sum(syllable_counts)
+    n_poly = sum(poly_flags)
+    n_rare = sum(rare_flags)
+    n_complex = sum(poly or rare for poly, rare in zip(poly_flags, rare_flags))
 
     word_scores: list[tuple[str, float]] = []
     for t in sent:
@@ -432,28 +617,29 @@ def analyze_sentence(
     max_sv = 0
     for tok in sent:
         if tok.dep_ in SUBJECT_DEPS and tok.head.pos_ in ("VERB", "AUX"):
-            max_sv = max(max_sv, abs(tok.head.i - tok.i) - 1)
+            start, end = sorted((tok.i, tok.head.i))
+            gap = sum(1 for item in sent if start < item.i < end and item.is_alpha)
+            max_sv = max(max_sv, gap)
 
     n_sub = sum(1 for t in sent if t.dep_ in SUBORDINATE_DEPS)
 
-    def depth(tok, d=0):
+    def depth(tok: Any, d: int = 0) -> int:
         kids = [c for c in tok.children if c.sent == sent]
         return d if not kids else max(depth(c, d + 1) for c in kids)
 
     tree_depth = depth(sent.root)
 
     hits: list[str] = []
-    lowered = sent.text.lower()
-    for phrase in ANAPHORIC_PHRASES:
-        if phrase in lowered:
+    for phrase, pattern in _ANAPHORIC_PATTERNS:
+        if pattern.search(sent.text):
             hits.append(phrase)
     # Bare demonstrative: sentence opens with this/that/these/those/it NOT
     # followed by a noun ("This shows..." forces the reader to resolve the
     # referent; "This method shows..." does not).
     first = next((t for t in sent if t.is_alpha), None)
     if first is not None and first.lower_ in BARE_DEMONSTRATIVES:
-        nxt = next((t for t in sent if t.i > first.i and t.is_alpha), None)
-        if nxt is None or nxt.pos_ not in ("NOUN", "PROPN"):
+        anchors_noun = first.dep_ == "det" and first.head.pos_ in ("NOUN", "PROPN")
+        if not anchors_noun:
             hits.append(f"bare '{first.text}'")
     # Mid-sentence pronoun density adds one point per third-person pronoun.
     # Skipped when coreference resolution runs: it charges pronouns by actual
@@ -463,8 +649,7 @@ def analyze_sentence(
         pron = sum(
             1
             for t in sent
-            if t.lower_ in ("it", "its", "they", "them", "their")
-            and t.i != (first.i if first else -1)
+            if t.lower_ in THIRD_PERSON_PRONOUNS and t.i != (first.i if first else -1)
         )
     score = len(hits) + pron
     if pron:
@@ -478,8 +663,10 @@ def analyze_sentence(
     return SentenceStats(
         text=sent.text.strip(),
         n_words=n_words,
+        n_syllables=n_syllables,
         n_polysyllables=n_poly,
         n_rare_words=n_rare,
+        n_complex_words=n_complex,
         max_subj_verb_dist=max_sv,
         n_subordinate_clauses=n_sub,
         tree_depth=tree_depth,
@@ -497,12 +684,15 @@ def clip(s: str, n: int = 90) -> str:
     return s if len(s) <= n else s[: n - 3] + "..."
 
 
-def report(stats: list[SentenceStats], full_text: str, top: int, show_all: bool) -> str:
+def report(stats: list[SentenceStats], top: int, show_all: bool) -> str:
     out: list[str] = []
     sents = [s for s in stats if s.n_words >= 3]
     if not sents:
         return "No prose sentences found."
     lengths = [s.n_words for s in sents]
+    total_words = sum(lengths)
+    total_syllables = sum(s.n_syllables for s in sents)
+    total_complex = sum(s.n_complex_words for s in sents)
 
     out.append("=" * 78)
     out.append("SENTENCE COMPLEXITY")
@@ -532,12 +722,19 @@ def report(stats: list[SentenceStats], full_text: str, top: int, show_all: bool)
     out.append(
         fmt_row(
             "Flesch reading ease",
-            f"{textstat.flesch_reading_ease(full_text):.1f}",
+            f"{flesch_reading_ease(total_words, len(sents), total_syllables):.1f}",
             "30-50 typical for papers",
         )
     )
-    out.append(fmt_row("Flesch-Kincaid grade", f"{textstat.flesch_kincaid_grade(full_text):.1f}"))
-    out.append(fmt_row("Gunning fog index", f"{textstat.gunning_fog(full_text):.1f}"))
+    out.append(
+        fmt_row(
+            "Flesch-Kincaid grade",
+            f"{flesch_kincaid_grade(total_words, len(sents), total_syllables):.1f}",
+        )
+    )
+    out.append(
+        fmt_row("Gunning fog index", f"{gunning_fog(total_words, len(sents), total_complex):.1f}")
+    )
     out.append("")
     out.append(f"  Longest {top}:")
     for s in sorted(sents, key=lambda s: -s.n_words)[:top]:
@@ -547,7 +744,6 @@ def report(stats: list[SentenceStats], full_text: str, top: int, show_all: bool)
     out.append("=" * 78)
     out.append("WORD COMPLEXITY")
     out.append("=" * 78)
-    total_words = sum(lengths)
     poly = sum(s.n_polysyllables for s in sents)
     rare = sum(s.n_rare_words for s in sents)
     out.append(fmt_row("Words analyzed", str(total_words)))
@@ -566,8 +762,14 @@ def report(stats: list[SentenceStats], full_text: str, top: int, show_all: bool)
         )
     )
     out.append(
-        fmt_row("Avg syllables per word", f"{textstat.avg_syllables_per_word(full_text):.2f}")
+        fmt_row("Complex-word union", f"{total_complex} ({100 * total_complex / total_words:.1f}%)")
     )
+    out.append(fmt_row("Avg syllables per word", f"{total_syllables / total_words:.2f}"))
+    out.append("")
+    out.append(f"  Most complex {top}:")
+    for s in sorted(sents, key=lambda s: -s.n_complex_words / s.n_words)[:top]:
+        ratio = 100 * s.n_complex_words / s.n_words
+        out.append(f"    [{ratio:.0f}% complex] {clip(s.text)}")
 
     out.append("")
     out.append("=" * 78)
@@ -637,7 +839,12 @@ def report(stats: list[SentenceStats], full_text: str, top: int, show_all: bool)
     heavy = [s for s in ref if s.referential_score >= 2]
     out.append(fmt_row("Heavy (score >= 2)", str(len(heavy))))
     n_vague = sum(1 for s in ref for h in s.referential_hits if h.startswith("vague reference"))
-    n_dist = sum(1 for s in ref for h in s.referential_hits if h.startswith("distant referent"))
+    n_dist = sum(
+        1
+        for s in ref
+        for h in s.referential_hits
+        if h.startswith(("distant referent", "far antecedent"))
+    )
     out.append(
         fmt_row("Vague definite NPs", str(n_vague), "unanchored, e.g. 'the main target metric'")
     )
@@ -663,13 +870,19 @@ def report(stats: list[SentenceStats], full_text: str, top: int, show_all: bool)
 
 
 def analyze_file(
-    path: Path, nlp, use_coref: bool
+    path: Path, nlp: Any, allow_outside_includes: bool = False
 ) -> tuple[str, list[SentenceStats], list[tuple[int, str]]]:
     source = path.read_text(encoding="utf-8", errors="replace")
+    source = remove_non_prose_environments(strip_comments(source))
     seg_titles: list[tuple[int, str]] = [(0, "")]
     seg_starts: list[int] = [0]
-    if path.suffix == ".tex":
-        source = inline_inputs(source, path.parent)
+    if path.suffix.lower() == ".tex":
+        source = inline_inputs(
+            source,
+            path.parent,
+            active_paths={path.resolve()},
+            allow_outside=allow_outside_includes,
+        )
         cites, labels = load_aux(path.with_suffix(".aux"))
         source = resolve_refs(source, cites, labels)
         abstract, body = document_body(source)
@@ -691,25 +904,23 @@ def analyze_file(
     else:
         text = source
     if not text:
-        sys.exit(f"{path}: no prose found after stripping LaTeX markup.")
+        raise NoProseError("no prose found after stripping LaTeX markup")
+    if len(text) > MAX_DOCUMENT_CHARS:
+        raise DocumentTooLargeError(
+            f"expanded prose is {len(text):,} characters; limit is {MAX_DOCUMENT_CHARS:,}"
+        )
     nlp.max_length = max(len(text) + 1, nlp.max_length)
     doc = nlp(text)
     sents = list(doc.sents)
-
-    coref_hits = None
-    if use_coref:
-        coref_hits = coref_distance_hits(text, [(s.start_char, s.end_char) for s in sents])
+    if not any(sum(token.is_alpha for token in sent) >= 3 for sent in sents):
+        raise NoProseError("no prose sentences with at least three words found")
 
     stats: list[SentenceStats] = []
     last_seen: dict[str, int] = {}
     from bisect import bisect_right
 
     for idx, sent in enumerate(sents):
-        st = analyze_sentence(sent, idx, last_seen, count_pronouns=coref_hits is None)
-        if coref_hits is not None:
-            for msg, weight in coref_hits[idx]:
-                st.referential_hits.append(msg)
-                st.referential_score += weight
+        st = analyze_sentence(sent, idx, last_seen)
         st.seg = max(0, bisect_right(seg_starts, sent.start_char) - 1)
         stats.append(st)
         for tok in sent:
@@ -718,42 +929,112 @@ def analyze_file(
     return text, stats, seg_titles
 
 
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
+
+
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Writing-complexity statistics for LaTeX documents")
+    ap = argparse.ArgumentParser(
+        prog="texstats",
+        description="Writing-complexity statistics for LaTeX documents",
+    )
+    ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     ap.add_argument("files", type=Path, nargs="+", help=".tex (or plain text) files to analyze")
     ap.add_argument(
-        "--top", type=int, default=5, help="how many worst offenders to list per category"
+        "--top",
+        type=_positive_int,
+        default=5,
+        help="how many worst offenders to list per category",
     )
     ap.add_argument("--all", action="store_true", help="also print the full per-sentence table")
     ap.add_argument(
         "--highlight",
         choices=[*METRICS, "all"],
-        help="render a PDF with each sentence highlighted green->red by this metric "
+        help="render a PDF with each sentence highlighted white->garnet by this metric "
         "('all' renders one PDF per metric)",
     )
     ap.add_argument(
-        "--no-coref",
+        "--allow-outside-includes",
         action="store_true",
-        help="skip neural coreference resolution (faster; surface heuristics only)",
+        help="allow TeX input/include commands to read outside the document directory",
+    )
+    ap.add_argument(
+        "--force",
+        action="store_true",
+        help="overwrite existing highlighted PDF files",
     )
     args = ap.parse_args()
 
+    if args.highlight and shutil.which("typst") is None:
+        ap.error("--highlight requires the 'typst' executable on PATH")
+
+    failed = False
+    paths: list[Path] = []
+    for path in args.files:
+        if path.is_file():
+            paths.append(path)
+        else:
+            print(f"texstats: error: {path}: input file not found", file=sys.stderr)
+            failed = True
+    if not paths:
+        raise SystemExit(1)
+
     import spacy
 
-    nlp = spacy.load("en_core_web_sm")
-    for path in args.files:
-        text, stats, seg_titles = analyze_file(path, nlp, use_coref=not args.no_coref)
+    try:
+        nlp = spacy.load("en_core_web_sm")
+    except OSError as exc:
+        ap.error(f"could not load the en_core_web_sm language model: {exc}")
+
+    for path in paths:
+        try:
+            text, stats, seg_titles = analyze_file(
+                path,
+                nlp,
+                allow_outside_includes=args.allow_outside_includes,
+            )
+        except (
+            DocumentTooLargeError,
+            IncludeError,
+            NoProseError,
+            OSError,
+            UnsafeIncludeError,
+        ) as exc:
+            print(f"texstats: error: {path}: {exc}", file=sys.stderr)
+            failed = True
+            continue
         print(f"\n{path}  ({len(text.split())} words after markup stripping)\n")
-        print(report(stats, text, args.top, args.all))
+        print(report(stats, args.top, args.all))
         if args.highlight:
-            from .highlight import render_metric_pdf
+            from .highlight import RenderError, render_metric_pdf
 
             keys = list(METRICS) if args.highlight == "all" else [args.highlight]
-            prose = [s for s in stats if s.n_words >= 3]
             for key in keys:
-                out_pdf = path.with_name(f"{path.stem}_{key}.pdf")
-                render_metric_pdf(prose, seg_titles, key, path.name, out_pdf)
+                source_stem = (
+                    path.stem
+                    if path.suffix.lower() == ".tex"
+                    else f"{path.stem}_{path.suffix.lstrip('.').lower() or 'text'}"
+                )
+                out_pdf = path.with_name(f"{source_stem}_{key}.pdf")
+                if out_pdf.exists() and not args.force:
+                    print(
+                        f"texstats: error: {out_pdf}: output exists; pass --force to overwrite",
+                        file=sys.stderr,
+                    )
+                    failed = True
+                    break
+                try:
+                    render_metric_pdf(stats, seg_titles, key, path.name, out_pdf)
+                except (OSError, RenderError) as exc:
+                    print(f"texstats: error: {path}: {exc}", file=sys.stderr)
+                    failed = True
+                    break
                 print(f"  wrote {out_pdf}")
+    if failed:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

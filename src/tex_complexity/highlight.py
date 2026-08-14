@@ -1,8 +1,8 @@
 """Render per-sentence complexity as a highlighted PDF via Typst.
 
 Each sentence of the document prose is typeset with a background color on a
-light-green -> light-red scale according to its score on one metric, with the
-raw value shown as a small superscript. One PDF per requested metric.
+white-to-garnet scale according to its score on one metric, with the raw value
+shown as a small superscript. One PDF per requested metric.
 """
 
 from __future__ import annotations
@@ -13,22 +13,34 @@ from pathlib import Path
 
 from .metrics import METRICS, SentenceStats
 
-# Light green -> light yellow -> light red.
-_GREEN = (226, 240, 217)
-_YELLOW = (255, 242, 204)
-_RED = (244, 199, 195)
+# High-contrast institutional palette, from least to most complex.
+_SCALE = (
+    (255, 255, 255),  # White.
+    (236, 236, 236),  # 10% Black.
+    (255, 242, 227),  # Sandstorm.
+    (204, 46, 64),  # Rose.
+    (115, 0, 10),  # Garnet.
+)
+_BLACK = "#000000"
+_WHITE = "#ffffff"
 
-_TYPST_ESCAPES = str.maketrans({c: f"\\{c}" for c in "\\#$*_`[]<>@"})
+_TYPST_ESCAPES = str.maketrans({c: f"\\{c}" for c in "\\#$*_`[]<>@-+=/"})
+
+
+class RenderError(RuntimeError):
+    """Raised when Typst cannot render a highlighted document."""
 
 
 def _color(t: float) -> str:
     t = min(max(t, 0.0), 1.0)
-    if t < 0.5:
-        a, b, u = _GREEN, _YELLOW, t * 2
-    else:
-        a, b, u = _YELLOW, _RED, (t - 0.5) * 2
-    rgb = tuple(round(x + (y - x) * u) for x, y in zip(a, b))
+    rgb = _SCALE[min(int(t * len(_SCALE)), len(_SCALE) - 1)]
     return "#{:02x}{:02x}{:02x}".format(*rgb)
+
+
+def _ink(t: float) -> str:
+    """Choose readable text for the quantized background color."""
+    index = min(int(min(max(t, 0.0), 1.0) * len(_SCALE)), len(_SCALE) - 1)
+    return _WHITE if index >= 3 else _BLACK
 
 
 def _esc(s: str) -> str:
@@ -40,7 +52,10 @@ def _legend(lo: float, hi: float, fmt: str) -> str:
     for i in range(5):
         t = i / 4
         val = lo + (hi - lo) * t
-        stops.append(f'#highlight(fill: rgb("{_color(t)}"))[ {format(val, fmt)} ]')
+        stops.append(
+            f'#highlight(fill: rgb("{_color(t)}"))'
+            f'[#text(fill: rgb("{_ink(t)}"))[ {format(val, fmt)} ]]'
+        )
     return "  ".join(stops)
 
 
@@ -58,9 +73,11 @@ def _word_run(group: list[SentenceStats]) -> str:
         for token, w in s.word_scores:
             text, ws = token.rstrip(), token[len(token.rstrip()) :]
             if w >= _WORD_THRESHOLD and text:
+                t = 0.5 + min(w, 1.0) / 2
                 body.append(
                     f'#highlight(fill: rgb("{_word_color(w)}"), top-edge: 0.9em, '
-                    f"bottom-edge: -0.25em)[{_esc(text)}]{_esc(ws)}"
+                    f'bottom-edge: -0.25em)[#text(fill: rgb("{_ink(t)}"))'
+                    f"[{_esc(text)}]]{_esc(ws)}"
                 )
             else:
                 body.append(_esc(token))
@@ -73,9 +90,11 @@ def _sentence_run(group: list[SentenceStats], score_fn, lo: float, hi: float, fm
     for s in group:
         val = score_fn(s)
         t = (val - lo) / (hi - lo) if hi > lo else 0.0
+        ink = _ink(t)
         body.append(
             f'#highlight(fill: rgb("{_color(t)}"), top-edge: 0.9em, bottom-edge: -0.25em)'
-            f"[{_esc(s.text)}#text(size: 6pt, fill: luma(90))[ ({format(val, fmt)})]] "
+            f'[#text(fill: rgb("{ink}"))'
+            f"[{_esc(s.text)}#text(size: 6pt)[ ({format(val, fmt)})]]] "
         )
     return "".join(body)
 
@@ -97,9 +116,12 @@ def render_metric_pdf(
         )
         legend = (
             "plain = common  "
-            + f'#highlight(fill: rgb("{_word_color(0.3)}"))[ uncommon ]  '
-            + f'#highlight(fill: rgb("{_word_color(0.6)}"))[ rare ]  '
-            + f'#highlight(fill: rgb("{_word_color(1.0)}"))[ very rare / unknown ]'
+            + f'#highlight(fill: rgb("{_word_color(0.3)}"))'
+            + f'[#text(fill: rgb("{_ink(0.65)}"))[ uncommon ]]  '
+            + f'#highlight(fill: rgb("{_word_color(0.6)}"))'
+            + f'[#text(fill: rgb("{_ink(0.8)}"))[ rare ]]  '
+            + f'#highlight(fill: rgb("{_word_color(1.0)}"))'
+            + f'[#text(fill: rgb("{_ink(1.0)}"))[ very rare / unknown ]]'
         )
     else:
         legend = _legend(lo, hi, fmt)
@@ -136,7 +158,7 @@ def render_metric_pdf(
             else:
                 lines.append(_sentence_run(group, score_fn, lo, hi, fmt))
             any_content = True
-    with tempfile.NamedTemporaryFile("w", suffix=".typ", delete=False) as f:
+    with tempfile.NamedTemporaryFile("w", suffix=".typ", delete=False, encoding="utf-8") as f:
         f.write("\n".join(lines))
         typ_path = Path(f.name)
     try:
@@ -147,6 +169,8 @@ def render_metric_pdf(
             text=True,
         )
     except subprocess.CalledProcessError as e:
-        raise SystemExit(f"typst compile failed for {out_pdf.name}:\n{e.stderr}") from e
+        raise RenderError(f"typst compile failed for {out_pdf.name}:\n{e.stderr}") from e
+    except FileNotFoundError as exc:
+        raise RenderError("the 'typst' executable was not found") from exc
     finally:
         typ_path.unlink(missing_ok=True)

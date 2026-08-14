@@ -10,8 +10,10 @@ from typing import Callable
 class SentenceStats:
     text: str
     n_words: int
+    n_syllables: int
     n_polysyllables: int
     n_rare_words: int
+    n_complex_words: int
     max_subj_verb_dist: int
     n_subordinate_clauses: int
     tree_depth: int
@@ -24,7 +26,7 @@ class SentenceStats:
 
 
 def _word_complexity(s: SentenceStats) -> float:
-    return (s.n_polysyllables + s.n_rare_words) / max(s.n_words, 1)
+    return s.n_complex_words / max(s.n_words, 1)
 
 
 def _nesting(s: SentenceStats) -> float:
